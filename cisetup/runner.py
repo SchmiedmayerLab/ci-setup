@@ -196,6 +196,9 @@ def ensure_service(cfg: Config, *, restart: bool = False) -> None:
     if not (cfg.runner_dir / "svc.sh").exists():
         raise SetupError("svc.sh missing — the runner is not installed/configured")
     if not service_installed(cfg):
+        # svc.sh refuses to run when ~/Library/LaunchAgents is missing
+        # (fresh macOS accounts don't have it until something creates it).
+        (Path.home() / "Library/LaunchAgents").mkdir(parents=True, exist_ok=True)
         log("Installing the runner's launchd service")
         _svc(cfg, "install")
     if restart and service_running(cfg) and util.runner_busy():

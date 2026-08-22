@@ -22,6 +22,10 @@ def cmd_converge(args, repo_root: Path) -> int:
 
     cfg = config.load(repo_root)
     cfg.pat = config.resolve_pat(cfg)
+
+    # Fresh macOS accounts have no ~/Library/LaunchAgents yet, and the
+    # runner's svc.sh (and brew autoupdate) error out instead of creating it.
+    (Path.home() / "Library/LaunchAgents").mkdir(parents=True, exist_ok=True)
     if not cfg.pat and not util.INTERACTIVE:
         # Not fatal: an already-registered runner converges fine without a
         # token — but registration and drift-triggered re-registration are
