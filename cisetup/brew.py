@@ -100,6 +100,28 @@ def _ensure_xcpretty() -> str | None:
     return gem_bin
 
 
+def _ensure_autoupdate() -> None:
+    """Keep packages fresh between converges via homebrew/autoupdate: a
+    per-user LaunchAgent that runs `brew update && brew upgrade` daily.
+    No sudo involved."""
+    status = run(["brew", "autoupdate", "status"], check=False, capture=True)
+    if status.returncode == 0 and "and running" in (status.stdout or ""):
+        ok("brew autoupdate active")
+        return
+    tap = run(["brew", "tap", "homebrew/autoupdate"], check=False)
+    if tap.returncode != 0:
+        warn("could not tap homebrew/autoupdate (offline?) — skipping")
+        return
+    start = run(["brew", "autoupdate", "start", "--upgrade"], check=False)
+    if start.returncode == 0:
+        ok("brew autoupdate enabled (daily update + upgrade)")
+    else:
+        warn(
+            "`brew autoupdate start` failed — enable manually with: "
+            "brew autoupdate start --upgrade"
+        )
+
+
 def probe() -> BrewEnv:
     """Just resolve paths, without installing anything (used by --skip-brew)."""
     if not shutil.which("brew"):
@@ -170,6 +192,9 @@ def ensure(cfg: Config) -> BrewEnv:
 
     if not missing_formulae and not upgrades:
         ok(f"all {len(formulae)} formulae installed and current")
+
+    if cfg.brew_autoupdate:
+        _ensure_autoupdate()
 
     # git-lfs needs a one-time (idempotent) hook into the user's gitconfig.
     run(["git", "lfs", "install"], capture=True)

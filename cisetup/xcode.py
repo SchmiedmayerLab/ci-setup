@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -147,6 +148,69 @@ def _xcodebuild(args: list[str], developer_dir: Path, *, check: bool = True):
     return run(["/usr/bin/xcodebuild", *args], env=env, check=check)
 
 
+# --- passwordless xcode-select (sudoers rule, ported from StanfordBDHG) ------
+
+_SUDOERS_PATH = Path("/etc/sudoers.d/xcode")
+_SUDOERS_CONTENT = (
+    "# Installed by ci-setup: lets CI jobs and unattended converges switch the\n"
+    "# selected Xcode and run its first-launch setup without a sudo password.\n"
+    "%admin ALL=NOPASSWD: /usr/bin/xcode-select, /usr/bin/xcodebuild -runFirstLaunch\n"
+)
+
+
+def ensure_sudoless_select(cfg: Config) -> None:
+    if not cfg.xcode_sudoless_select:
+        return
+    # The file is root-readable only, but stat works: it is managed solely by
+    # this setup, so existence is enough to consider it converged.
+    if _SUDOERS_PATH.exists():
+        ok("passwordless xcode-select rule present")
+        return
+    if not util.INTERACTIVE:
+        warn(
+            "passwordless xcode-select rule missing (needs one interactive "
+            "./setup.zsh run to install)"
+        )
+        return
+    log("Installing passwordless xcode-select sudoers rule (sudo)")
+    with tempfile.NamedTemporaryFile("w", suffix=".sudoers", delete=False) as tmp:
+        tmp.write(_SUDOERS_CONTENT)
+        tmp_path = tmp.name
+    try:
+        # Validate before installing — a broken sudoers file locks out sudo.
+        run(["/usr/sbin/visudo", "-cf", tmp_path], capture=True)
+        util.sudo_run(
+            ["install", "-m", "0440", "-o", "root", "-g", "wheel", tmp_path, _SUDOERS_PATH]
+        )
+    finally:
+        os.unlink(tmp_path)
+    ok("passwordless xcode-select rule installed")
+
+
+def _unattended_first_launch(developer_dir: Path) -> bool:
+    """First-launch setup without a password, via the sudoers rule: briefly
+    point the global selection at this Xcode (jobs are unaffected — they pin
+    theirs via DEVELOPER_DIR in the runner's .env), run -runFirstLaunch
+    (which only matches the passwordless rule in its bare /usr/bin form),
+    then restore the previous selection. `sudo -n` never prompts; it simply
+    fails when the rule is absent."""
+    probe = run(["sudo", "-n", "/usr/bin/xcode-select", "-p"], check=False, capture=True)
+    if probe.returncode != 0:
+        return False
+    previous = run(["/usr/bin/xcode-select", "-p"], check=False, capture=True).stdout.strip()
+    select = run(
+        ["sudo", "-n", "/usr/bin/xcode-select", "-s", str(developer_dir)],
+        check=False,
+        capture=True,
+    )
+    if select.returncode != 0:
+        return False
+    result = run(["sudo", "-n", "/usr/bin/xcodebuild", "-runFirstLaunch"], check=False)
+    if previous and previous != str(developer_dir):
+        run(["sudo", "-n", "/usr/bin/xcode-select", "-s", previous], check=False, capture=True)
+    return result.returncode == 0
+
+
 def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
     """First-launch setup, simulator/SDK platforms and Metal toolchain for one
     installed Xcode. Everything here is idempotent; xcodebuild itself skips
@@ -175,7 +239,7 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
                 util.sudo_run(
                     [developer_dir / "usr/bin/xcodebuild", "-runFirstLaunch"]
                 )
-            else:
+            elif not _unattended_first_launch(developer_dir):
                 warn(
                     f"Xcode {release.identifier}: first-launch setup failed without sudo "
                     "— run ./setup.zsh interactively once"

@@ -34,6 +34,7 @@ def cmd_converge(args, repo_root: Path) -> int:
 
     developer_dir = None
     if not args.skip_xcode:
+        xcode.ensure_sudoless_select(cfg)
         developer_dir = xcode.ensure(cfg)
 
     runner.ensure_installed(cfg)
