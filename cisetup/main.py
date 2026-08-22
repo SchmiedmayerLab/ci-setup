@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import re
 import sys
 from pathlib import Path
 
@@ -89,22 +90,61 @@ def cmd_status(args, repo_root: Path) -> int:
     return 0
 
 
+_PAT_REQUIREMENTS = f"""\
+A GitHub personal access token (PAT) lets the setup register, re-register,
+and deregister the runner via the GitHub API. Required rights:
+
+  repository runner (github.scope = "repo"):
+    classic PAT:       `repo` scope
+    fine-grained PAT:  repository permission "Administration: write"
+
+  organization runner (github.scope = "org"):
+    classic PAT:       `admin:org` scope
+    fine-grained PAT:  organization permission "Self-hosted runners: write"
+
+Prefer a fine-grained PAT limited to exactly the target repo/org.
+Create one at:
+  https://github.com/settings/personal-access-tokens/new   (fine-grained)
+  https://github.com/settings/tokens/new                   (classic)
+
+The token is stored only in this machine's login Keychain (service
+"{KEYCHAIN_SERVICE}") — never in a file or the repo.
+
+Usage:
+  ./setup.zsh store-pat            prompt for the token (input hidden)
+  ./setup.zsh store-pat <token>    store the given token
+"""
+
+
 def cmd_store_pat(args, repo_root: Path) -> int:
-    util.require_interactive("storing a PAT")
-    print("The PAT needs admin rights on the runner scope:")
-    print("  classic PAT:      `repo` scope (repo runners) / `admin:org` (org runners)")
-    print("  fine-grained PAT: repo 'Administration: write' / org 'Self-hosted runners: write'")
-    # `-w` without a value makes `security` prompt for the secret itself
-    # (hidden, with confirmation) — the PAT never appears in any argv.
-    run(
-        [
-            "security", "add-generic-password",
-            "-U",
-            "-a", getpass.getuser(),
-            "-s", KEYCHAIN_SERVICE,
-            "-w",
-        ]
-    )
+    if args.token:
+        if not re.fullmatch(r"[A-Za-z0-9_.=+/~-]+", args.token):
+            raise SetupError("that does not look like a GitHub PAT")
+        # `security -i` reads the command from stdin, keeping the token off
+        # security's argv (it was on setup.zsh's argv already — the caller's
+        # choice — but it should not leak any further).
+        run(
+            ["security", "-i"],
+            input=(
+                f'add-generic-password -U -a "{getpass.getuser()}" '
+                f'-s "{KEYCHAIN_SERVICE}" -w "{args.token}"\n'
+            ),
+            capture=True,
+        )
+    else:
+        print(_PAT_REQUIREMENTS)
+        util.require_interactive("prompting for a PAT")
+        # `-w` without a value makes `security` prompt for the secret itself
+        # (hidden, with confirmation) — the PAT never appears in any argv.
+        run(
+            [
+                "security", "add-generic-password",
+                "-U",
+                "-a", getpass.getuser(),
+                "-s", KEYCHAIN_SERVICE,
+                "-w",
+            ]
+        )
     ok(f"PAT stored in the login Keychain (service: {KEYCHAIN_SERVICE})")
     return 0
 
@@ -150,6 +190,12 @@ def main(argv: list[str]) -> int:
         help="what to do (default: converge)",
     )
     parser.add_argument(
+        "token",
+        nargs="?",
+        default=None,
+        help="the PAT to store (store-pat only); omit to see requirements and be prompted",
+    )
+    parser.add_argument(
         "--non-interactive",
         action="store_true",
         help="never prompt and never use sudo (what the boot agent uses)",
@@ -157,6 +203,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--skip-brew", action="store_true", help="skip the Homebrew phase")
     parser.add_argument("--skip-xcode", action="store_true", help="skip the Xcode phase")
     args = parser.parse_args(argv)
+    if args.token and args.command != "store-pat":
+        parser.error(f"unexpected argument {args.token!r} for command {args.command!r}")
 
     util.INTERACTIVE = not args.non_interactive and sys.stdin.isatty()
 

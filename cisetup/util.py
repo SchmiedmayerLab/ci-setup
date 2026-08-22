@@ -75,6 +75,7 @@ def run(
     env: dict | None = None,
     stdin_devnull: bool = False,
     timeout: float | None = None,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command. With capture=True stdout/stderr are collected; otherwise
     the child inherits our stdio so long-running tools stay visible."""
@@ -83,7 +84,9 @@ def run(
     if capture:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
-    if stdin_devnull or not INTERACTIVE:
+    if input is not None:
+        kwargs["input"] = input
+    elif stdin_devnull or not INTERACTIVE:
         # Unattended runs must never block on a child reading stdin.
         kwargs["stdin"] = subprocess.DEVNULL
     if not INTERACTIVE:

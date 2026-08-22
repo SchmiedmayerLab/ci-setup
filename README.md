@@ -116,7 +116,8 @@ the next converge.
 ```sh
 ./setup.zsh                # converge (default)
 ./setup.zsh status         # show runner/service/Xcode state
-./setup.zsh store-pat      # save the GitHub PAT to the login Keychain
+./setup.zsh store-pat      # print PAT requirements, prompt for it (hidden)
+./setup.zsh store-pat TOKEN  # store the given PAT directly
 ./setup.zsh uninstall      # deregister runner, remove services (asks first)
 ./setup.zsh converge --skip-xcode   # useful while iterating
 ```

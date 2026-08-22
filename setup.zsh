@@ -10,7 +10,9 @@
 # Usage:
 #   ./setup.zsh                        converge the machine (default)
 #   ./setup.zsh status                 show current state
-#   ./setup.zsh store-pat              save a GitHub PAT to the Keychain
+#   ./setup.zsh store-pat [token]      save a GitHub PAT to the Keychain
+#                                      (without a token: prints the PAT
+#                                      requirements and prompts, input hidden)
 #   ./setup.zsh uninstall              deregister the runner from GitHub
 #   ./setup.zsh converge --non-interactive
 #                                      what the boot LaunchAgent runs: never
