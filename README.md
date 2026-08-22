@@ -100,9 +100,13 @@ A lock file guarantees a manual run and the boot-time run never overlap.
 ## The boot agent (automatic re-runs)
 
 `converge` installs `~/Library/LaunchAgents/com.selfhosted-runner.setup.plist`,
-which runs `setup.zsh converge --non-interactive` at every login. Unattended
+which runs `setup.zsh converge --non-interactive` at every login **and daily
+at 03:30** (or on the next wake), so long-lived login sessions still pick up
+new Xcode releases, runner updates, and config changes. Disruptive steps
+(runner update, service restart, Xcode/runtime deletion) defer themselves
+while a job is running and are retried at the next converge. Unattended
 runs first `git pull --ff-only` this repo (re-executing themselves if the
-setup changed), so every reboot runs the latest committed version; a failed
+setup changed), so every run uses the latest committed version; a failed
 pull just means converging with the current checkout. In this
 mode the setup **never prompts and never uses sudo** (beyond the
 passwordless sudoers rule); anything that would

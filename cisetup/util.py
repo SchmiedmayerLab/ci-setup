@@ -175,6 +175,14 @@ def fmt_version(version: tuple[int, ...]) -> str:
     return ".".join(str(part) for part in version)
 
 
+def runner_busy() -> bool:
+    """True while the Actions runner is executing a job (Runner.Worker only
+    exists during a job). Disruptive steps — runner updates, service
+    restarts, Xcode/runtime deletion — defer themselves while this holds."""
+    proc = run(["pgrep", "-x", "Runner.Worker"], check=False, capture=True)
+    return proc.returncode == 0
+
+
 STATE_DIR = Path.home() / "Library/Application Support/ci-runner-setup"
 
 _lock_fd: int | None = None

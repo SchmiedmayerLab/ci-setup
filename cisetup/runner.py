@@ -86,6 +86,13 @@ def ensure_installed(cfg: Config) -> None:
         ok(f"runner v{fmt_version(current)} is current (latest: v{latest_str})")
         return
 
+    if current and util.runner_busy():
+        warn(
+            f"runner update v{fmt_version(current)} -> v{latest_str} deferred: "
+            "a job is currently running"
+        )
+        return
+
     plat = runner_platform()
     asset_name = f"actions-runner-{plat}-{latest_str}.tar.gz"
     asset_url = next(
@@ -185,6 +192,9 @@ def ensure_service(cfg: Config, *, restart: bool = False) -> None:
     if not service_installed(cfg):
         log("Installing the runner's launchd service")
         _svc(cfg, "install")
+    if restart and service_running(cfg) and util.runner_busy():
+        warn("service restart (changed job environment) deferred: a job is running")
+        restart = False
     if restart and service_running(cfg):
         log("Restarting the runner service (job environment changed)")
         _svc(cfg, "stop", check=False, capture=True)

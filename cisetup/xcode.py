@@ -352,13 +352,16 @@ def ensure(cfg: Config) -> Path | None:
         if info:
             _post_install(cfg, release, Path(info.path))
 
-    _remove_unwanted_xcodes(installed, desired)
-    kept_dirs = [
-        Path(installed_by_id[r.identifier].path) / "Contents/Developer"
-        for r in desired
-        if r.identifier in installed_by_id
-    ]
-    _cleanup_runtimes(kept_dirs)
+    if util.runner_busy():
+        warn("Xcode/runtime cleanup deferred: a job is currently running")
+    else:
+        _remove_unwanted_xcodes(installed, desired)
+        kept_dirs = [
+            Path(installed_by_id[r.identifier].path) / "Contents/Developer"
+            for r in desired
+            if r.identifier in installed_by_id
+        ]
+        _cleanup_runtimes(kept_dirs)
 
     latest_info = installed_by_id.get(latest.identifier)
     if latest_info:
