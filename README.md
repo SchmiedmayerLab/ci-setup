@@ -40,7 +40,7 @@ plain SSH).
    install dialog on a fresh machine — accept it, then clone again):
 
    ```sh
-   git clone https://github.com/<you>/ContinuousIntegration.git ~/ci-setup
+   git clone https://github.com/SchmiedmayerLab/ci-setup.git ~/ci-setup
    cd ~/ci-setup
    ```
 
