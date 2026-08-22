@@ -41,11 +41,13 @@ def _plist_bytes(cfg: Config) -> bytes:
             ],
             "EnvironmentVariables": {_MARKER_ENV: cfg.boot_label},
             "RunAtLoad": True,
-            # Also converge daily (03:30, or on the next wake), so long-lived
-            # login sessions still pick up new Xcode releases, runner updates,
-            # and config changes without a reboot. Disruptive steps defer
-            # themselves while a job is running (see util.runner_busy).
-            "StartCalendarInterval": {"Hour": 3, "Minute": 30},
+            # Also converge every 6 hours, so long-lived login sessions pick
+            # up new Xcode releases, runner updates, and config changes
+            # without a reboot. There is no "quiet hour" (the team spans many
+            # time zones) and none is needed: disruptive steps defer while a
+            # job is running and pause job intake while they work (see
+            # util.runner_busy and the cleanup/update paths).
+            "StartInterval": 6 * 60 * 60,
             "WorkingDirectory": str(cfg.repo_root),
             "StandardOutPath": str(LOG_PATH),
             "StandardErrorPath": str(LOG_PATH),

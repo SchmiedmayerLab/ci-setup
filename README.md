@@ -100,11 +100,14 @@ A lock file guarantees a manual run and the boot-time run never overlap.
 ## The boot agent (automatic re-runs)
 
 `converge` installs `~/Library/LaunchAgents/com.selfhosted-runner.setup.plist`,
-which runs `setup.zsh converge --non-interactive` at every login **and daily
-at 03:30** (or on the next wake), so long-lived login sessions still pick up
-new Xcode releases, runner updates, and config changes. Disruptive steps
-(runner update, service restart, Xcode/runtime deletion) defer themselves
-while a job is running and are retried at the next converge. Unattended
+which runs `setup.zsh converge --non-interactive` at every login **and every
+6 hours**, so long-lived login sessions still pick up new Xcode releases,
+runner updates, and config changes. No quiet-hour scheduling is needed (the
+team spans too many time zones for one to exist): disruptive steps defer
+themselves while a job is running, and the multi-minute Xcode/runtime
+cleanup additionally pauses the runner service so no job can be scheduled
+onto the machine mid-change — GitHub simply queues it or picks another
+runner, and the service comes back up at the end of the converge. Unattended
 runs first `git pull --ff-only` this repo (re-executing themselves if the
 setup changed), so every run uses the latest committed version; a failed
 pull just means converging with the current checkout. In this

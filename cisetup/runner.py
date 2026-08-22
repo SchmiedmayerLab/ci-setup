@@ -146,6 +146,12 @@ def ensure_installed(cfg: Config) -> None:
                 )
             ok("checksum verified")
 
+        # Re-check right before stopping: a job may have started while the
+        # tarball downloaded, and the stop would cancel it. The temp download
+        # is simply discarded; the next converge retries.
+        if current and util.runner_busy():
+            warn(f"runner update to v{latest_str} deferred: a job started during download")
+            return
         stop_service(cfg)
         cfg.runner_dir.mkdir(parents=True, exist_ok=True)
         # Extracting over an existing install is the supported manual-update

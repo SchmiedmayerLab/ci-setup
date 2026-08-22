@@ -13,6 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import runner as runner_service
 from . import util
 from .config import Config
 from .util import SetupError, log, ok, output, run, warn
@@ -355,6 +356,12 @@ def ensure(cfg: Config) -> Path | None:
     if util.runner_busy():
         warn("Xcode/runtime cleanup deferred: a job is currently running")
     else:
+        # Deleting Xcodes/runtimes takes minutes; pause the runner service so
+        # no job can be scheduled onto the machine mid-deletion. The listener
+        # comes back up in ensure_service at the end of the converge.
+        if runner_service.service_running(cfg):
+            log("Pausing the runner service during Xcode/runtime cleanup")
+            runner_service.stop_service(cfg)
         _remove_unwanted_xcodes(installed, desired)
         kept_dirs = [
             Path(installed_by_id[r.identifier].path) / "Contents/Developer"
