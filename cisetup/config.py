@@ -23,8 +23,9 @@ class Config:
     scope: str = "repo"  # "repo" | "org"
     owner: str = ""
     repo: str | None = None
+    # Resolved at runtime from the Keychain (never from config.toml, which is
+    # meant to be committed to git): see resolve_pat() / `setup.zsh store-pat`.
     pat: str | None = None
-    pat_command: str | None = None
 
     # [runner]
     runner_name: str = ""
@@ -117,8 +118,12 @@ def load(repo_root: Path) -> Config:
     cfg.repo = _str(gh, "repo", "github.repo") or None
     if cfg.scope == "repo" and (not cfg.repo or cfg.repo == "my-repo"):
         raise SetupError('config.toml: github.scope = "repo" requires github.repo')
-    cfg.pat = _str(gh, "pat", "github.pat") or None
-    cfg.pat_command = _str(gh, "pat_command", "github.pat_command") or None
+    if "pat" in gh or "pat_command" in gh:
+        raise SetupError(
+            "config.toml: PATs are not read from the config file (it is meant "
+            "to be committed) — store the PAT in the Keychain via "
+            "`./setup.zsh store-pat` instead"
+        )
 
     default_name = socket.gethostname().split(".")[0] or "mac-runner"
     cfg.runner_name = _str(runner, "name", "runner.name") or default_name
@@ -153,22 +158,10 @@ def load(repo_root: Path) -> Config:
 
 
 def resolve_pat(cfg: Config) -> str | None:
-    """PAT resolution order: config value, pat_command, Keychain, none."""
-    if cfg.pat:
-        return cfg.pat
-    if cfg.pat_command:
-        try:
-            # Bounded: an unattended run must not hang on a credential helper
-            # that tries to prompt (1Password, locked keychains, ...).
-            token = output(["/bin/zsh", "-c", cfg.pat_command], timeout=60)
-        except SetupError as e:
-            token = ""
-            if "timed out" in str(e):
-                warn("github.pat_command timed out (tried to prompt?)")
-        if token:
-            return token
-        warn("github.pat_command produced no token; trying the Keychain instead")
+    """The PAT comes exclusively from the login Keychain (`store-pat`);
+    config.toml is committable and must never carry credentials."""
     try:
+        # Bounded: an unattended run must not hang on a locked keychain.
         token = output(
             ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             timeout=15,

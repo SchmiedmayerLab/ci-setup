@@ -44,7 +44,9 @@ plain SSH).
    cd ~/ci-setup
    ```
 
-4. Create and edit the config:
+4. Create and edit the config (skip if a `config.toml` is already committed —
+   it holds no secrets, so it can live in git and be shared by every runner;
+   runner names default to each machine's hostname):
 
    ```sh
    cp config.example.toml config.toml
@@ -138,11 +140,12 @@ Jobs needing a specific Xcode can override it:
 
 - **Never attach self-hosted runners to a public repository** — fork PRs
   could execute arbitrary code on this machine.
-- The PAT lives in the login Keychain (`github-runner-pat`), not on disk —
-  but be aware that **CI jobs run as the same user** and can read that
-  Keychain item while the session is unlocked (always, on an auto-login CI
-  box). Use a fine-grained PAT limited to runner administration on exactly
-  this repo/org so a compromised job can't do more than re-register runners.
+- The PAT lives exclusively in the login Keychain (`github-runner-pat`);
+  `config.toml` carries no secrets and is safe to commit. Be aware that
+  **CI jobs run as the same user** and can read that Keychain item while the
+  session is unlocked (always, on an auto-login CI box) — use a fine-grained
+  PAT limited to runner administration on exactly this repo/org so a
+  compromised job can't do more than re-register runners.
 - Runner tarballs are SHA-256-verified against the official release notes;
   installation fails closed if no checksum is published.
 - Registration/removal tokens are short-lived (1 h), never stored, and

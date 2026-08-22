@@ -1,4 +1,6 @@
-# Copy to config.toml (which is gitignored) and adjust.
+# Copy to config.toml and adjust. config.toml carries no secrets and is meant
+# to be committed to git — one shared config can serve a whole runner fleet
+# (runner names default to each machine's hostname).
 
 [github]
 # "repo": the runner belongs to a single repository; "org": to the whole org.
@@ -6,15 +8,12 @@ scope = "repo"
 owner = "my-org"
 repo  = "my-repo"           # only used when scope = "repo"
 
-# GitHub auth used to register/deregister the runner (and for API rate limits).
-# Preferred: store a PAT once in the macOS Keychain — ./setup.zsh store-pat —
-# it is picked up automatically (Keychain service "github-runner-pat").
+# GitHub auth (registering/deregistering the runner, API rate limits) comes
+# EXCLUSIVELY from the macOS Keychain — store it once per machine with
+# ./setup.zsh store-pat (Keychain service "github-runner-pat").
 # Required PAT rights: classic `repo` scope (repo runners) or `admin:org`
 # (org runners); fine-grained: repo "Administration: write" or org
 # "Self-hosted runners: write".
-# Alternatives:
-# pat_command = "op read op://vault/github-pat/credential"  # any command printing a PAT
-# pat = "ghp_..."                                           # discouraged: plaintext on disk
 
 [runner]
 # name = "my-mac-mini"      # default: this machine's hostname
