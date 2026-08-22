@@ -4,6 +4,7 @@ simulator runtimes, SDKs and the Metal toolchain for each of them."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -305,18 +306,22 @@ def ensure(cfg: Config) -> Path | None:
         if release.identifier in installed_ids:
             ok(f"Xcode {release.identifier} already installed")
             continue
+        # --experimental-unxip: much faster unarchiving; --empty-trash:
+        # reclaim the tens of GB the trashed .xip would otherwise occupy.
+        install_cmd = [
+            "xcodes", "install", "--experimental-unxip", "--empty-trash",
+            release.identifier,
+        ]
         if util.INTERACTIVE:
             log(
                 f"Installing Xcode {release.identifier} "
                 "(first time: xcodes will prompt for your Apple ID)"
             )
-            run(["xcodes", "install", release.identifier])
+            run(install_cmd)
         else:
             # A stored xcodes session may allow this unattended; if it needs
             # interactive Apple ID auth it fails fast thanks to /dev/null stdin.
-            result = run(
-                ["xcodes", "install", release.identifier], check=False, stdin_devnull=True
-            )
+            result = run(install_cmd, check=False, stdin_devnull=True)
             if result.returncode != 0:
                 warn(
                     f"could not install Xcode {release.identifier} unattended "
@@ -343,6 +348,78 @@ def ensure(cfg: Config) -> Path | None:
 
     latest_info = installed_by_id.get(latest.identifier)
     if latest_info:
-        return Path(latest_info.path) / "Contents/Developer"
+        developer_dir = Path(latest_info.path) / "Contents/Developer"
+        _ensure_global_selection(developer_dir)
+        return developer_dir
     warn(f"latest stable Xcode {latest.identifier} is not installed yet")
     return None
+
+
+def _ensure_global_selection(developer_dir: Path) -> None:
+    """Point the system-wide xcode-select at the latest stable Xcode. CI jobs
+    don't depend on this (they pin DEVELOPER_DIR via the runner's .env), but
+    it keeps SSH sessions and anything else on the machine consistent.
+    Passwordless via the sudoers rule; `sudo -n` never prompts."""
+    current = run(["/usr/bin/xcode-select", "-p"], check=False, capture=True).stdout.strip()
+    if current == str(developer_dir):
+        ok(f"xcode-select points at {developer_dir}")
+        return
+    result = run(
+        ["sudo", "-n", "/usr/bin/xcode-select", "-s", str(developer_dir)],
+        check=False,
+        capture=True,
+    )
+    if result.returncode == 0:
+        ok(f"globally selected {developer_dir}")
+    else:
+        warn(
+            "could not update the global xcode-select (sudoers rule missing? "
+            "run ./setup.zsh interactively once)"
+        )
+
+
+# --- Apple WWDR intermediate certificate (code-signing chain) ----------------
+
+_WWDR_CERT_URL = "https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer"
+_WWDR_CERT_NAME = "Apple Worldwide Developer Relations Certification Authority"
+
+
+def ensure_wwdr_certificate() -> None:
+    """Install Apple's WWDR G3 intermediate certificate into the System
+    keychain — without it, code-signing in CI can fail with 'unable to build
+    certificate chain' on an otherwise fresh macOS."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cert = Path(tmp) / "AppleWWDRCAG3.cer"
+        try:
+            util.download(_WWDR_CERT_URL, cert)
+        except SetupError as e:
+            warn(f"could not download the WWDR certificate — skipping ({e})")
+            return
+        digest = hashlib.sha256(cert.read_bytes()).hexdigest().upper()
+        existing = run(
+            [
+                "security", "find-certificate", "-a", "-Z",
+                "-c", _WWDR_CERT_NAME,
+                "/Library/Keychains/System.keychain",
+            ],
+            check=False,
+            capture=True,
+        )
+        if digest in (existing.stdout or "").upper():
+            ok("WWDR intermediate certificate present")
+            return
+        if not util.INTERACTIVE:
+            warn(
+                "WWDR intermediate certificate missing (needs one interactive "
+                "./setup.zsh run to install)"
+            )
+            return
+        log("Installing the Apple WWDR intermediate certificate (sudo)")
+        util.sudo_run(
+            [
+                "security", "add-trusted-cert", "-d", "-r", "trustRoot",
+                "-k", "/Library/Keychains/System.keychain",
+                cert,
+            ]
+        )
+        ok("WWDR intermediate certificate installed")

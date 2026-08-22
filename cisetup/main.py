@@ -33,6 +33,7 @@ def cmd_converge(args, repo_root: Path) -> int:
         brew_env = brew.ensure(cfg)
 
     xcode.ensure_sudoless_select()
+    xcode.ensure_wwdr_certificate()
     developer_dir = None
     if not args.skip_xcode:
         developer_dir = xcode.ensure(cfg)

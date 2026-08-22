@@ -337,6 +337,7 @@ def ensure_job_env(cfg: Config, brew_env: BrewEnv, developer_dir: Path | None) -
 
     env_updates = {
         "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",  # fastlane wants both
         "JAVA_HOME": f"{brew_env.openjdk_prefix}/libexec/openjdk.jdk/Contents/Home",
     }
     if developer_dir is not None:

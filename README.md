@@ -17,9 +17,11 @@ every reboot so the machine heals itself.
   minor train, and (if newer than stable) the newest beta/RC — each with
   simulator runtimes, SDKs and (Xcode 26+) the Metal toolchain.
 - **Job environment**: CI jobs automatically get Homebrew on `PATH`,
-  `JAVA_HOME`, and the latest stable Xcode via `DEVELOPER_DIR` — configured
-  through the runner's `.env`/`.path` files, no shell profiles, no
-  `xcode-select`, no sudo.
+  `JAVA_HOME`/`LANG`/`LC_ALL`, and the latest stable Xcode via
+  `DEVELOPER_DIR` — configured through the runner's `.env`/`.path` files
+  (the runner's own mechanism for injecting env/PATH into every job).
+  The global `xcode-select` also tracks the latest stable Xcode, and
+  Apple's WWDR intermediate certificate is installed for code signing.
 - **Boot agent**: a LaunchAgent that re-runs the whole setup at every login,
   unattended and sudo-free.
 
@@ -98,8 +100,12 @@ A lock file guarantees a manual run and the boot-time run never overlap.
 ## The boot agent (automatic re-runs)
 
 `converge` installs `~/Library/LaunchAgents/com.selfhosted-runner.setup.plist`,
-which runs `setup.zsh converge --non-interactive` at every login. In this
-mode the setup **never prompts and never uses sudo**; anything that would
+which runs `setup.zsh converge --non-interactive` at every login. Unattended
+runs first `git pull --ff-only` this repo (re-executing themselves if the
+setup changed), so every reboot runs the latest committed version; a failed
+pull just means converging with the current checkout. In this
+mode the setup **never prompts and never uses sudo** (beyond the
+passwordless sudoers rule); anything that would
 need either (a brand-new Xcode's first-launch step, an expired Apple ID
 session, a re-registration without a usable PAT) is skipped with a warning
 and left for the next manual run — an unattended run never tears down a
@@ -161,6 +167,10 @@ Jobs needing a specific Xcode can override it:
   installation fails closed if no checksum is published.
 - Registration/removal tokens are short-lived (1 h), never stored, and
   redacted from error messages/logs.
+- `xcodes` keeps the Apple ID password/session in the login Keychain so
+  unattended runs can install new Xcode releases (the old setup ran
+  `xcodes signout` instead). Same caveat as the PAT: jobs run as this user —
+  use a dedicated CI Apple ID with no other roles.
 
 ## Troubleshooting
 

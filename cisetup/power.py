@@ -34,9 +34,25 @@ def _current() -> dict[str, str]:
     return settings
 
 
+def _ensure_screensaver_off() -> None:
+    """User-level, no sudo — safe in unattended runs. A kicking-in screen
+    saver costs CPU/GPU while UI tests run."""
+    current = run(
+        ["defaults", "-currentHost", "read", "com.apple.screensaver", "idleTime"],
+        check=False,
+        capture=True,
+    )
+    if current.returncode == 0 and current.stdout.strip() == "0":
+        ok("screen saver disabled")
+        return
+    run(["defaults", "-currentHost", "write", "com.apple.screensaver", "idleTime", "-int", "0"])
+    ok("screen saver disabled")
+
+
 def ensure(cfg: Config) -> None:
     if not cfg.power_manage:
         return
+    _ensure_screensaver_off()
     current = _current()
     # Only converge keys pmset actually reports; retrying a setting the
     # hardware never echoes back would re-run sudo on every converge.

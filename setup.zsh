@@ -52,6 +52,29 @@ if ! /usr/bin/xcode-select -p &>/dev/null; then
   fail "re-run ./setup.zsh once the Command Line Tools installation has finished"
 fi
 
+# --- Self-update (unattended runs only) --------------------------------------
+# The boot LaunchAgent should always run the latest committed version of this
+# setup. Manual runs are left alone — the operator controls the checkout.
+# A failed pull (offline, no upstream, dirty tree) must never block converging.
+
+if (( NONINTERACTIVE )) && [[ -z ${CI_SETUP_PULLED:-} ]]; then
+  if /usr/bin/git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
+    typeset before="" after=""
+    before="$(/usr/bin/git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+    if /usr/bin/git -C "$SCRIPT_DIR" pull --ff-only --quiet; then
+      after="$(/usr/bin/git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n $before && -n $after && $before != $after ]]; then
+        log "setup updated ($before -> $after) — re-executing"
+        # Guard against re-exec loops; git replaces files by rename, so the
+        # currently running copy stayed intact until this point.
+        CI_SETUP_PULLED=1 exec "$SCRIPT_DIR/setup.zsh" "$@"
+      fi
+    else
+      log "git pull failed (offline? no upstream?) — continuing with the current version"
+    fi
+  fi
+fi
+
 # --- Homebrew ----------------------------------------------------------------
 
 find_brew() {
@@ -82,6 +105,11 @@ if [[ -z $BREW_BIN ]]; then
 fi
 
 eval "$("$BREW_BIN" shellenv)"
+
+# Make brew available in login shells too (handy when SSHing into the box).
+if ! grep -qsF "brew shellenv" "$HOME/.zprofile"; then
+  print -r -- "eval \"\$($BREW_BIN shellenv)\"" >> "$HOME/.zprofile"
+fi
 
 # --- Python >= 3.11 from Homebrew -------------------------------------------
 
