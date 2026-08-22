@@ -26,8 +26,6 @@ platforms = ["all"]         # per-Xcode simulator/SDK downloads: ["all"], a list
 extra_formulae = []         # installed in addition to the built-in tool list
 extra_casks = []            # note: many casks need sudo to install; unattended
                             # (boot-time) runs therefore skip cask installs/upgrades
-autoupdate = true           # homebrew/autoupdate LaunchAgent: daily unattended
-                            # `brew update` + `brew upgrade`
 
 [boot]
 install_agent = true        # re-run this setup at every login/boot (LaunchAgent)

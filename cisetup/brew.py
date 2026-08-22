@@ -103,26 +103,19 @@ def _ensure_xcpretty() -> str | None:
     return gem_bin
 
 
-def _ensure_autoupdate() -> None:
-    """Keep packages fresh between converges via homebrew/autoupdate: a
-    per-user LaunchAgent that runs `brew update && brew upgrade` daily.
-    No sudo involved."""
+def _remove_autoupdate() -> None:
+    """Earlier revisions enabled homebrew/autoupdate; it is redundant next to
+    the 6-hourly converge and dangerous besides — it upgrades on its own
+    schedule with no busy-guard, so it could swap binaries (even python3)
+    under a running job or converge. Actively dismantle it where present."""
     status = run(["brew", "autoupdate", "status"], check=False, capture=True)
-    if status.returncode == 0 and "and running" in (status.stdout or ""):
-        ok("brew autoupdate active")
+    if status.returncode != 0 or "not configured" in (status.stdout or ""):
         return
-    tap = run(["brew", "tap", "homebrew/autoupdate"], check=False)
-    if tap.returncode != 0:
-        warn("could not tap homebrew/autoupdate (offline?) — skipping")
-        return
-    start = run(["brew", "autoupdate", "start", "--upgrade"], check=False)
-    if start.returncode == 0:
-        ok("brew autoupdate enabled (daily update + upgrade)")
+    result = run(["brew", "autoupdate", "delete"], check=False, capture=True)
+    if result.returncode == 0:
+        ok("removed the obsolete brew autoupdate agent")
     else:
-        warn(
-            "`brew autoupdate start` failed — enable manually with: "
-            "brew autoupdate start --upgrade"
-        )
+        warn("could not remove the brew autoupdate agent — run: brew autoupdate delete")
 
 
 def probe() -> BrewEnv:
@@ -176,7 +169,12 @@ def ensure(cfg: Config) -> BrewEnv:
     wanted_canonical = {formula_map[f] for f in formulae}
     outdated = set(output(["brew", "outdated", "--formula", "--quiet"], check=False).split())
     upgrades = sorted(wanted_canonical & outdated)
-    if upgrades:
+    if upgrades and util.runner_busy():
+        # Swapping tool binaries under a running job is as disruptive as a
+        # runner update; the next converge retries.
+        warn(f"brew upgrades deferred (a job is running): {', '.join(upgrades)}")
+        upgrades = []
+    elif upgrades:
         log(f"Upgrading: {', '.join(upgrades)}")
         run(["brew", "upgrade", "--yes", "--formula", *upgrades])
     if casks:
@@ -184,11 +182,8 @@ def ensure(cfg: Config) -> BrewEnv:
             output(["brew", "outdated", "--cask", "--quiet"], check=False).split()
         )
         cask_upgrades = sorted({cask_map[c] for c in casks} & outdated_casks)
-        if cask_upgrades and not util.INTERACTIVE:
-            warn(
-                f"skipping cask upgrade in unattended mode (may need sudo): "
-                f"{', '.join(cask_upgrades)}"
-            )
+        if cask_upgrades and (not util.INTERACTIVE or util.runner_busy()):
+            warn(f"cask upgrades deferred (sudo/busy): {', '.join(cask_upgrades)}")
         elif cask_upgrades:
             log(f"Upgrading casks: {', '.join(cask_upgrades)}")
             run(["brew", "upgrade", "--yes", "--cask", *cask_upgrades])
@@ -196,8 +191,7 @@ def ensure(cfg: Config) -> BrewEnv:
     if not missing_formulae and not upgrades:
         ok(f"all {len(formulae)} formulae installed and current")
 
-    if cfg.brew_autoupdate:
-        _ensure_autoupdate()
+    _remove_autoupdate()
 
     # git-lfs needs a one-time (idempotent) hook into the user's gitconfig.
     run(["git", "lfs", "install"], capture=True)

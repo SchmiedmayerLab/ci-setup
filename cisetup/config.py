@@ -43,7 +43,6 @@ class Config:
     # [brew]
     brew_extra_formulae: list[str] = field(default_factory=list)
     brew_extra_casks: list[str] = field(default_factory=list)
-    brew_autoupdate: bool = True
 
     # [boot]
     boot_install: bool = True
@@ -151,7 +150,6 @@ def load(repo_root: Path) -> Config:
 
     cfg.brew_extra_formulae = _str_list(brew.get("extra_formulae", []), "brew.extra_formulae")
     cfg.brew_extra_casks = _str_list(brew.get("extra_casks", []), "brew.extra_casks")
-    cfg.brew_autoupdate = bool(brew.get("autoupdate", True))
 
     cfg.boot_install = bool(boot.get("install_agent", True))
     cfg.boot_label = _str(boot, "label", "boot.label", "com.selfhosted-runner.setup")
