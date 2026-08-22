@@ -8,13 +8,6 @@ scope = "repo"
 owner = "my-org"
 repo  = "my-repo"           # only used when scope = "repo"
 
-# GitHub auth (registering/deregistering the runner, API rate limits) comes
-# EXCLUSIVELY from the macOS Keychain — store it once per machine with
-# ./setup.zsh store-pat (Keychain service "github-runner-pat").
-# Required PAT rights: classic `repo` scope (repo runners) or `admin:org`
-# (org runners); fine-grained: repo "Administration: write" or org
-# "Self-hosted runners: write".
-
 [runner]
 # name = "my-mac-mini"      # default: this machine's hostname
 labels = []                 # extra labels; self-hosted / macOS / ARM64 (X64 on
