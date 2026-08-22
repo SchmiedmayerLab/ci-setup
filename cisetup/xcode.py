@@ -158,9 +158,7 @@ _SUDOERS_CONTENT = (
 )
 
 
-def ensure_sudoless_select(cfg: Config) -> None:
-    if not cfg.xcode_sudoless_select:
-        return
+def ensure_sudoless_select() -> None:
     # The file is root-readable only, but stat works: it is managed solely by
     # this setup, so existence is enough to consider it converged.
     if _SUDOERS_PATH.exists():

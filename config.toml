@@ -21,9 +21,6 @@ manage = true               # install/maintain Xcode releases via `xcodes`
 install_beta = true         # also keep the newest beta/RC (when newer than stable)
 platforms = ["all"]         # per-Xcode simulator/SDK downloads: ["all"], a list
                             # like ["iOS", "watchOS"], or [] to skip
-sudoless_select = true      # sudoers rule for passwordless `xcode-select -s` and
-                            # `xcodebuild -runFirstLaunch` (installed on the first
-                            # interactive run; also used by unattended converges)
 
 [brew]
 extra_formulae = []         # installed in addition to the built-in tool list

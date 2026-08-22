@@ -32,9 +32,9 @@ def cmd_converge(args, repo_root: Path) -> int:
     else:
         brew_env = brew.ensure(cfg)
 
+    xcode.ensure_sudoless_select()
     developer_dir = None
     if not args.skip_xcode:
-        xcode.ensure_sudoless_select(cfg)
         developer_dir = xcode.ensure(cfg)
 
     runner.ensure_installed(cfg)

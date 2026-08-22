@@ -39,7 +39,6 @@ class Config:
     xcode_manage: bool = True
     xcode_install_beta: bool = True
     xcode_platforms: list[str] = field(default_factory=lambda: ["all"])
-    xcode_sudoless_select: bool = True
 
     # [brew]
     brew_extra_formulae: list[str] = field(default_factory=list)
@@ -149,7 +148,6 @@ def load(repo_root: Path) -> Config:
     cfg.xcode_manage = bool(xcode.get("manage", True))
     cfg.xcode_install_beta = bool(xcode.get("install_beta", True))
     cfg.xcode_platforms = _str_list(xcode.get("platforms", ["all"]), "xcode.platforms")
-    cfg.xcode_sudoless_select = bool(xcode.get("sudoless_select", True))
 
     cfg.brew_extra_formulae = _str_list(brew.get("extra_formulae", []), "brew.extra_formulae")
     cfg.brew_extra_casks = _str_list(brew.get("extra_casks", []), "brew.extra_casks")
