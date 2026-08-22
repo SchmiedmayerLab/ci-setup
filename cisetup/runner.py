@@ -20,7 +20,6 @@ from .util import (
     fmt_version,
     log,
     ok,
-    output,
     prompt,
     run,
     vtuple,

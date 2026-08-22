@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from . import util
 from .config import Config
-from .util import log, ok, output, warn
+from .util import log, ok, output, run, warn
 
 # sleep 0:        never sleep the system
 # displaysleep 0: never sleep the display (simulators/UI tests keep running)
