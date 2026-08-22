@@ -320,6 +320,10 @@ def ensure_registered(cfg: Config) -> None:
                 "unattended re-registration — keeping the current registration"
             )
             return
+        if util.runner_busy():
+            warn("re-registration deferred: a job is currently running")
+            return
+        old_state = recorded_state(cfg)
         log("Runner configuration changed — re-registering")
         # Fetch the new registration token BEFORE tearing anything down, so a
         # token failure leaves the current registration and service running.
@@ -327,10 +331,25 @@ def ensure_registered(cfg: Config) -> None:
         deregister(cfg)
         log(f"Registering runner '{cfg.runner_name}' with {cfg.github_url}")
         _register(cfg, token=new_token)
+        _cleanup_old_work_dir(cfg, old_state)
     else:
         log(f"Registering runner '{cfg.runner_name}' with {cfg.github_url}")
         _register(cfg)
     ok("runner registered")
+
+
+def _cleanup_old_work_dir(cfg: Config, old_state: dict | None) -> None:
+    """After a re-registration changed the work dir name, the previous one
+    holds only dead job workspaces — reclaim the space."""
+    old_name = (old_state or {}).get("work_dir")
+    if not old_name or old_name == cfg.work_dir:
+        return
+    old_dir = Path(old_name)
+    if not old_dir.is_absolute():
+        old_dir = cfg.runner_dir / old_dir
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
+        ok(f"removed the previous work dir ({old_dir})")
 
 
 # --- job environment ---------------------------------------------------------

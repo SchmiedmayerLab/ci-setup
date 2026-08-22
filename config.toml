@@ -11,7 +11,8 @@ owner = "SchmiedmayerLab"
 labels = []                 # extra labels; self-hosted / macOS / ARM64 (X64 on
                             # Intel) are added automatically
 dir = "~/actions-runner"    # where the runner software lives
-work_dir = "_work"          # job workspaces, relative to dir
+work_dir = "_work.noindex"  # job workspaces, relative to dir; the .noindex
+                            # suffix keeps Spotlight from indexing checkouts
 # group = "Default"         # org runner group
 cleanup_hooks = true        # reset simulators before each job, wipe
                             # workspaces/caches after (hooks/*.sh)

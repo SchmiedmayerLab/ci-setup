@@ -31,7 +31,7 @@ class Config:
     runner_name: str = ""
     labels: list[str] = field(default_factory=list)
     runner_dir: Path = Path()
-    work_dir: str = "_work"
+    work_dir: str = "_work.noindex"
     group: str | None = None
     cleanup_hooks: bool = True
 
@@ -138,7 +138,9 @@ def load(repo_root: Path) -> Config:
         raise SetupError(
             "config.toml: runner.dir must be an absolute path (may start with ~)"
         )
-    cfg.work_dir = _str(runner, "work_dir", "runner.work_dir", "_work") or "_work"
+    cfg.work_dir = (
+        _str(runner, "work_dir", "runner.work_dir", "_work.noindex") or "_work.noindex"
+    )
     cfg.group = _str(runner, "group", "runner.group") or None
     if cfg.group and cfg.scope != "org":
         raise SetupError('config.toml: runner.group only applies to github.scope = "org"')

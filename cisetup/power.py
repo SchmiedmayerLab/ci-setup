@@ -1,11 +1,40 @@
-"""Optional power management: keep the machine awake as a CI box.
-Needs sudo, therefore interactive runs only; boot-time runs skip it."""
+"""Machine settings: power management (keep the CI box awake; sudo, so
+interactive runs only), screen saver, and Spotlight exclusions."""
 
 from __future__ import annotations
+
+import shutil
+from pathlib import Path
 
 from . import util
 from .config import Config
 from .util import log, ok, output, run, warn
+
+_DERIVED_DATA_NOINDEX = Path.home() / "Library/Developer/Xcode/DerivedData.noindex"
+
+
+def ensure_spotlight_exclusions() -> None:
+    """Keep Spotlight's mdworker away from build artifacts: macOS reliably
+    skips directories whose name ends in `.noindex` (the old
+    .metadata_never_index marker is no longer honored). The runner work dir
+    carries the suffix via its configured name; DerivedData is relocated
+    through Xcode's own preference, which xcodebuild honors as well.
+    User-level defaults — no sudo, unattended-safe."""
+    domain, key = "com.apple.dt.Xcode", "IDECustomDerivedDataLocation"
+    current = run(["defaults", "read", domain, key], check=False, capture=True)
+    if current.returncode == 0 and current.stdout.strip() == str(_DERIVED_DATA_NOINDEX):
+        ok("DerivedData lives outside Spotlight indexing")
+    else:
+        run(["defaults", "write", domain, key, "-string", str(_DERIVED_DATA_NOINDEX)])
+        ok(f"DerivedData relocated to {_DERIVED_DATA_NOINDEX}")
+    # The previous default location is a pure cache; reclaim it when idle.
+    legacy = Path.home() / "Library/Developer/Xcode/DerivedData"
+    if legacy.exists():
+        if util.runner_busy():
+            warn("removal of the old DerivedData directory deferred: a job is running")
+        else:
+            shutil.rmtree(legacy, ignore_errors=True)
+            ok("removed the old DerivedData directory")
 
 # sleep 0:        never sleep the system
 # displaysleep 0: never sleep the display (simulators/UI tests keep running)
