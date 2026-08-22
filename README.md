@@ -44,14 +44,9 @@ plain SSH).
    cd ~/ci-setup
    ```
 
-4. Create and edit the config (skip if a `config.toml` is already committed —
-   it holds no secrets, so it can live in git and be shared by every runner;
-   runner names default to each machine's hostname):
-
-   ```sh
-   cp config.example.toml config.toml
-   open -e config.toml   # set github.owner / github.repo etc.
-   ```
+4. Check `config.toml` (committed with the repo, shared by every runner Mac —
+   it targets the SchmiedmayerLab org and holds no secrets; runner names
+   default to each machine's hostname). Usually nothing to change here.
 
 5. Store the PAT in the Keychain:
 

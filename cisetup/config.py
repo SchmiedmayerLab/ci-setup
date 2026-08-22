@@ -92,8 +92,8 @@ def load(repo_root: Path) -> Config:
     path = repo_root / "config.toml"
     if not path.exists():
         raise SetupError(
-            "config.toml not found — run: cp config.example.toml config.toml "
-            "and edit it first"
+            "config.toml not found — it ships with the repo, so this checkout "
+            "looks incomplete"
         )
     try:
         data = tomllib.loads(path.read_text())

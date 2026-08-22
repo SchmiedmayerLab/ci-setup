@@ -1,12 +1,10 @@
-# Copy to config.toml and adjust. config.toml carries no secrets and is meant
-# to be committed to git — one shared config can serve a whole runner fleet
-# (runner names default to each machine's hostname).
+# Shared configuration for every SchmiedmayerLab runner Mac. This file is
+# committed — it must never contain secrets. The GitHub PAT lives in each
+# machine's login Keychain instead (./setup.zsh store-pat).
 
 [github]
-# "repo": the runner belongs to a single repository; "org": to the whole org.
-scope = "repo"
-owner = "my-org"
-repo  = "my-repo"           # only used when scope = "repo"
+scope = "org"               # runners are registered org-wide
+owner = "SchmiedmayerLab"
 
 [runner]
 # name = "my-mac-mini"      # default: this machine's hostname
@@ -14,7 +12,7 @@ labels = []                 # extra labels; self-hosted / macOS / ARM64 (X64 on
                             # Intel) are added automatically
 dir = "~/actions-runner"    # where the runner software lives
 work_dir = "_work"          # job workspaces, relative to dir
-# group = "Default"         # org runner group (scope = "org" only)
+# group = "Default"         # org runner group
 
 [xcode]
 manage = true               # install/maintain Xcode releases via `xcodes`
@@ -32,4 +30,4 @@ install_agent = true        # re-run this setup at every login/boot (LaunchAgent
 # label = "com.selfhosted-runner.setup"
 
 [power]
-manage = false              # true: pmset never-sleep settings (sudo; interactive runs only)
+manage = true               # pmset never-sleep settings (sudo; interactive runs only)
