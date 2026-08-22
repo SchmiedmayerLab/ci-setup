@@ -54,7 +54,7 @@ def cmd_converge(args, repo_root: Path) -> int:
     env_changed = runner.ensure_job_env(cfg, brew_env, developer_dir)
     runner.ensure_service(cfg, restart=env_changed)
     boot.ensure(cfg)
-    power.ensure_spotlight_exclusions()
+    power.ensure_spotlight_exclusions(cfg)
     power.ensure(cfg)
 
     print()

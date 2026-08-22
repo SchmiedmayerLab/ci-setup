@@ -34,3 +34,9 @@ install_agent = true        # re-run this setup at every login/boot (LaunchAgent
 
 [power]
 manage = true               # pmset never-sleep settings (sudo; interactive runs only)
+
+[spotlight]
+# Build-tool cache locations that are hardcoded upstream: each becomes a
+# symlink into a .noindex tree, which keeps Spotlight's mdworker off them
+# (Spotlight skips *.noindex and never follows symlinks).
+noindex_paths = ["~/Library/Caches/org.swift.swiftpm"]

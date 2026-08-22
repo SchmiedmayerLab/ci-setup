@@ -3,6 +3,7 @@ interactive runs only), screen saver, and Spotlight exclusions."""
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -12,14 +13,48 @@ from .util import log, ok, output, run, warn
 
 _DERIVED_DATA_NOINDEX = Path.home() / "Library/Developer/Xcode/DerivedData.noindex"
 
+# Umbrella for redirected cache dirs whose locations are hardcoded into build
+# tools (SwiftPM & co.). *.noindex trees are skipped by Spotlight.
+_NOINDEX_ROOT = Path.home() / "Library/Caches/ci-setup.noindex"
 
-def ensure_spotlight_exclusions() -> None:
+
+def _ensure_noindex_redirect(path: Path) -> None:
+    """Exclude a build-tool-hardcoded path from Spotlight by turning it into
+    a symlink into a .noindex tree. Two Spotlight behaviors make this
+    reliable: *.noindex directories are skipped, and the indexer never
+    follows symlinks — so tools keep their usual path while mdworker never
+    sees the content. (The GUI's Privacy list has no supported CLI; its
+    root-owned plist is rewritten by mds at will, so we do not touch it.)"""
+    target = _NOINDEX_ROOT / path.name
+    if path.is_symlink():
+        if os.path.realpath(path) == os.path.realpath(target) and target.is_dir():
+            return  # converged; stay quiet on re-runs
+        path.unlink()
+    target.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not path.is_symlink():
+        if util.runner_busy():
+            warn(f"Spotlight redirect of {path} deferred: a job is running")
+            return
+        # Preserve the warm cache: move the contents into the target.
+        for child in path.iterdir():
+            shutil.move(str(child), str(target / child.name))
+        path.rmdir()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_symlink() and not path.exists():
+        path.symlink_to(target)
+    ok(f"excluded from Spotlight (noindex redirect): {path}")
+
+
+def ensure_spotlight_exclusions(cfg: Config) -> None:
     """Keep Spotlight's mdworker away from build artifacts: macOS reliably
     skips directories whose name ends in `.noindex` (the old
     .metadata_never_index marker is no longer honored). The runner work dir
     carries the suffix via its configured name; DerivedData is relocated
-    through Xcode's own preference, which xcodebuild honors as well.
-    User-level defaults — no sudo, unattended-safe."""
+    through Xcode's own preference, which xcodebuild honors as well; paths
+    hardcoded into build tools get noindex symlink redirects.
+    User-level only — no sudo, unattended-safe."""
+    for raw in cfg.spotlight_noindex_paths:
+        _ensure_noindex_redirect(Path(os.path.expanduser(raw)))
     domain, key = "com.apple.dt.Xcode", "IDECustomDerivedDataLocation"
     current = run(["defaults", "read", domain, key], check=False, capture=True)
     if current.returncode == 0 and current.stdout.strip() == str(_DERIVED_DATA_NOINDEX):

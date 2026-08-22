@@ -51,6 +51,11 @@ class Config:
     # [power]
     power_manage: bool = False
 
+    # [spotlight]
+    spotlight_noindex_paths: list[str] = field(
+        default_factory=lambda: ["~/Library/Caches/org.swift.swiftpm"]
+    )
+
     @property
     def github_url(self) -> str:
         if self.scope == "repo":
@@ -157,6 +162,12 @@ def load(repo_root: Path) -> Config:
     cfg.boot_label = _str(boot, "label", "boot.label", "com.selfhosted-runner.setup")
 
     cfg.power_manage = bool(power.get("manage", False))
+
+    spotlight = data.get("spotlight", {})
+    cfg.spotlight_noindex_paths = _str_list(
+        spotlight.get("noindex_paths", cfg.spotlight_noindex_paths),
+        "spotlight.noindex_paths",
+    )
 
     return cfg
 
