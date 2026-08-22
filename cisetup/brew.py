@@ -130,7 +130,9 @@ def ensure(cfg: Config) -> BrewEnv:
     missing_formulae = [f for f in formulae if formula_map[f] not in installed_formulae]
     if missing_formulae:
         log(f"Installing formulae: {', '.join(missing_formulae)}")
-        run(["brew", "install", "--formula", *missing_formulae])
+        # --yes: since Homebrew 6, install/upgrade ask for confirmation by
+        # default; answer yes so runs (especially unattended ones) never stall.
+        run(["brew", "install", "--yes", "--formula", *missing_formulae])
 
     if casks:
         installed_casks = set(output(["brew", "list", "--cask", "-1"], check=False).split())
@@ -144,14 +146,14 @@ def ensure(cfg: Config) -> BrewEnv:
             )
         elif missing_casks:
             log(f"Installing casks: {', '.join(missing_casks)} (may require sudo)")
-            run(["brew", "install", "--cask", *missing_casks])
+            run(["brew", "install", "--yes", "--cask", *missing_casks])
 
     wanted_canonical = {formula_map[f] for f in formulae}
     outdated = set(output(["brew", "outdated", "--formula", "--quiet"], check=False).split())
     upgrades = sorted(wanted_canonical & outdated)
     if upgrades:
         log(f"Upgrading: {', '.join(upgrades)}")
-        run(["brew", "upgrade", "--formula", *upgrades])
+        run(["brew", "upgrade", "--yes", "--formula", *upgrades])
     if casks:
         outdated_casks = set(
             output(["brew", "outdated", "--cask", "--quiet"], check=False).split()
@@ -164,7 +166,7 @@ def ensure(cfg: Config) -> BrewEnv:
             )
         elif cask_upgrades:
             log(f"Upgrading casks: {', '.join(cask_upgrades)}")
-            run(["brew", "upgrade", "--cask", *cask_upgrades])
+            run(["brew", "upgrade", "--yes", "--cask", *cask_upgrades])
 
     if not missing_formulae and not upgrades:
         ok(f"all {len(formulae)} formulae installed and current")

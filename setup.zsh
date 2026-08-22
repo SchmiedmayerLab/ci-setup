@@ -88,7 +88,8 @@ eval "$("$BREW_BIN" shellenv)"
 PYTHON="$("$BREW_BIN" --prefix)/bin/python3"
 if [[ ! -x $PYTHON ]]; then
   log "Installing python3 via Homebrew."
-  "$BREW_BIN" install --quiet python3
+  # --yes: Homebrew 6 asks for confirmation before installing by default.
+  "$BREW_BIN" install --quiet --yes python3
 fi
 if [[ ! -x $PYTHON ]]; then
   fail "expected Homebrew python3 at $PYTHON"
