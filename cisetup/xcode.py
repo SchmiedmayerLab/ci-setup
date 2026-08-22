@@ -5,6 +5,7 @@ simulator runtimes, SDKs and the Metal toolchain for each of them."""
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -71,6 +72,21 @@ class InstalledXcode:
     identifier: str
     build: str
     path: str
+
+
+_IDENTIFIER_RE = re.compile(
+    r"^(?P<version>\d+(?:\.\d+){0,2})"
+    r"(?P<pre> Beta(?: \d+)?| Release Candidate(?: \d+)?)?$"
+)
+
+
+def parse_identifier(identifier: str) -> tuple[tuple[int, ...], tuple] | None:
+    """'26.0 Beta 5' -> ((26, 0), ('beta', 5)); None if unrecognizable."""
+    match = _IDENTIFIER_RE.match(identifier.strip())
+    if not match:
+        return None
+    version = tuple(int(p) for p in match.group("version").split("."))
+    return version, _parse_pre(match.group("pre"))
 
 
 def _parse_pre(raw: str | None) -> tuple:
@@ -336,15 +352,13 @@ def ensure(cfg: Config) -> Path | None:
         if info:
             _post_install(cfg, release, Path(info.path))
 
-    desired_ids = {r.identifier for r in desired}
-    for entry in installed:
-        if entry.identifier in desired_ids:
-            continue
-        if "Beta" in entry.identifier or "Release Candidate" in entry.identifier:
-            warn(
-                f"Xcode {entry.identifier} looks superseded — "
-                f"free ~15 GB with: xcodes uninstall '{entry.identifier}'"
-            )
+    _remove_unwanted_xcodes(installed, desired)
+    kept_dirs = [
+        Path(installed_by_id[r.identifier].path) / "Contents/Developer"
+        for r in desired
+        if r.identifier in installed_by_id
+    ]
+    _cleanup_runtimes(kept_dirs)
 
     latest_info = installed_by_id.get(latest.identifier)
     if latest_info:
@@ -353,6 +367,82 @@ def ensure(cfg: Config) -> Path | None:
         return developer_dir
     warn(f"latest stable Xcode {latest.identifier} is not installed yet")
     return None
+
+
+def _remove_unwanted_xcodes(
+    installed: list[InstalledXcode], desired: list[Release]
+) -> None:
+    """Delete installed Xcodes outside the desired set (latest stable,
+    previous minor, newest beta). Never touches a version newer than
+    everything in the desired set — if the release-list parser ever misses
+    the newest Xcode, this must fail safe rather than delete it."""
+    desired_ids = {r.identifier for r in desired}
+    max_desired = max(r.version for r in desired)
+    for entry in installed:
+        if entry.identifier in desired_ids:
+            continue
+        parsed = parse_identifier(entry.identifier)
+        if parsed is None or parsed[0] > max_desired:
+            warn(f"keeping unrecognized/newer Xcode {entry.identifier} ({entry.path})")
+            continue
+        log(f"Removing unwanted Xcode {entry.identifier} ({entry.path})")
+        result = run(["xcodes", "uninstall", entry.identifier], check=False)
+        if result.returncode != 0:
+            warn(f"could not uninstall Xcode {entry.identifier}")
+
+
+def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
+    """Delete simulator runtimes no kept Xcode needs: superseded builds of
+    the same runtime (a stable release replacing its beta), unusable images,
+    and builds that none of the kept Xcodes' SDKs match. Conservative: any
+    parse/tool failure deletes nothing further."""
+    if not developer_dirs:
+        return
+    env = dict(os.environ, DEVELOPER_DIR=str(developer_dirs[0]))
+    run(["xcrun", "simctl", "runtime", "delete", "--outdated"], env=env, check=False, capture=True)
+    run(["xcrun", "simctl", "runtime", "delete", "--unusable"], env=env, check=False, capture=True)
+
+    wanted_builds: set[str] = set()
+    for dev in developer_dirs:
+        match = run(
+            ["xcrun", "simctl", "runtime", "match", "list", "-j"],
+            env=dict(os.environ, DEVELOPER_DIR=str(dev)),
+            check=False,
+            capture=True,
+        )
+        if match.returncode != 0:
+            return
+        try:
+            entries = json.loads(match.stdout or "{}")
+        except json.JSONDecodeError:
+            return
+        for entry in entries.values():
+            build = entry.get("chosenRuntimeBuild") or entry.get("defaultBuild")
+            if build:
+                wanted_builds.add(build)
+    if not wanted_builds:
+        return
+
+    listing = run(
+        ["xcrun", "simctl", "runtime", "list", "-j"], env=env, check=False, capture=True
+    )
+    if listing.returncode != 0:
+        return
+    try:
+        runtimes = json.loads(listing.stdout or "{}")
+    except json.JSONDecodeError:
+        return
+    for uuid, runtime in runtimes.items():
+        build = runtime.get("build")
+        if not build or build in wanted_builds or runtime.get("deletable") is False:
+            continue
+        name = f"{runtime.get('runtimeIdentifier', uuid)} ({build})"
+        log(f"Removing simulator runtime no kept Xcode uses: {name}")
+        result = run(
+            ["xcrun", "simctl", "runtime", "delete", uuid], env=env, check=False, capture=True
+        )
+        if result.returncode != 0:
+            warn(f"could not delete runtime {name}")
 
 
 def _ensure_global_selection(developer_dir: Path) -> None:

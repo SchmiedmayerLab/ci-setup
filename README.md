@@ -89,7 +89,7 @@ skips whatever is already correct:
 |---|---|
 | Homebrew packages | installs missing, upgrades outdated, otherwise no-op (plus a daily `brew autoupdate` LaunchAgent between converges) |
 | Passwordless xcode-select | sudoers rule (`/etc/sudoers.d/xcode`) installed on the first interactive run: `sudo xcode-select -s` and `sudo xcodebuild -runFirstLaunch` work without a password — for CI jobs and for unattended converges finishing a new Xcode's first-launch setup |
-| Xcode releases | installs newly released stable/previous/beta versions, refreshes simulators/SDKs/Metal toolchain, warns about superseded betas (never deletes) |
+| Xcode releases | installs newly released stable/previous/beta versions, refreshes simulators/SDKs/Metal toolchain; deletes Xcodes outside that set and simulator runtimes no kept Xcode uses (never a version newer than the ones it knows) |
 | Runner software | updates when a newer release exists (checksum-verified); the runner also self-updates between runs |
 | Registration | re-registers only when `config.toml` changed (name/labels/URL/group/work dir); otherwise untouched |
 | Job env (`.env`/`.path`) | rewritten only on change; service restarted only then |

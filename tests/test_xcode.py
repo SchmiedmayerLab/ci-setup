@@ -11,6 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from cisetup.xcode import (  # noqa: E402
     Release,
+    parse_identifier,
     parse_installed,
     parse_list,
     select_desired,
@@ -155,6 +156,20 @@ class ParseInstalledTests(unittest.TestCase):
             ],
         )
         self.assertEqual(installed[1].build, "17A324")
+
+
+class ParseIdentifierTests(unittest.TestCase):
+    def test_stable(self):
+        self.assertEqual(parse_identifier("16.4"), ((16, 4), ()))
+        self.assertEqual(parse_identifier("16.4.1"), ((16, 4, 1), ()))
+
+    def test_prerelease(self):
+        self.assertEqual(parse_identifier("26.0 Beta 5"), ((26, 0), ("beta", 5)))
+        self.assertEqual(parse_identifier("26.1 Release Candidate"), ((26, 1), ("rc", 1)))
+
+    def test_unrecognizable_is_none(self):
+        self.assertIsNone(parse_identifier("garbage"))
+        self.assertIsNone(parse_identifier("16.4 [Universal]"))
 
 
 class SortKeyTests(unittest.TestCase):
