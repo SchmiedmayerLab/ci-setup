@@ -1,3 +1,11 @@
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
+
 """Unit tests for the pure Xcode release-selection logic.
 
 Run with:  python3 -m unittest discover -s tests

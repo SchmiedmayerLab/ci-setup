@@ -1,4 +1,11 @@
 #!/bin/sh
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
 # Runs after every job (wired via ACTIONS_RUNNER_HOOK_JOB_COMPLETED in the
 # runner's .env — see cisetup/runner.py). Leaves no job state behind:
 # checkouts, build products, caches, and simulator contents are all wiped.

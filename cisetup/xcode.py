@@ -1,3 +1,11 @@
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
+
 """Xcode releases via `xcodes`: keep the latest stable release, the previous
 minor release, and (optionally) the newest beta/RC installed — including
 simulator runtimes, SDKs and the Metal toolchain for each of them."""

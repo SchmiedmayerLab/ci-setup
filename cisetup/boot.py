@@ -1,3 +1,11 @@
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
+
 """A per-user LaunchAgent that re-runs `setup converge --non-interactive`
 at every login (with auto-login: every boot), so the runner re-converges and
 re-registers itself without anyone touching the machine. No sudo involved."""

@@ -1,3 +1,13 @@
+<!--
+
+This source file is part of the SchmiedmayerLab ci-setup open-source project
+
+SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+
+SPDX-License-Identifier: MIT
+
+-->
+
 # macOS Self-Hosted GitHub Actions Runner
 
 Everything needed to turn a **fresh macOS install** into a self-hosted GitHub

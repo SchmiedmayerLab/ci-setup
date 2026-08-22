@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
 """Entry point for the CI runner setup. Normally invoked via ../setup,
 which bootstraps Homebrew and a modern python3 first."""
 

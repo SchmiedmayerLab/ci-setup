@@ -1,3 +1,11 @@
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
+
 """Shared helpers: logging, subprocess wrappers, prompts, download, locking."""
 
 from __future__ import annotations

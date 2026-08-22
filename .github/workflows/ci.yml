@@ -1,0 +1,48 @@
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  reuse:
+    name: REUSE Compliance Check
+    uses: SchmiedmayerLab/.github/.github/workflows/reuse.yml@v0.5
+    permissions:
+      contents: read
+  python:
+    name: Python Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: flake8 (error-class checks)
+        run: |
+          pip install flake8
+          flake8 --select=F,E9 cisetup tests bin/ci-setup
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: zsh syntax check
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy zsh
+          zsh -n setup

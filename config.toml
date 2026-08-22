@@ -1,3 +1,11 @@
+#
+# This source file is part of the SchmiedmayerLab ci-setup open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+#
+# SPDX-License-Identifier: MIT
+#
+
 # Shared configuration for every SchmiedmayerLab runner Mac. This file is
 # committed — it must never contain secrets. The GitHub PAT lives in each
 # machine's login Keychain instead (./setup store-pat).
