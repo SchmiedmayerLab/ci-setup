@@ -11,6 +11,13 @@ if sys.version_info < (3, 11):
         "Run it via ./setup.zsh, which bootstraps that."
     )
 
+# Python loads codecs lazily. If Homebrew upgrades this very interpreter
+# while we run (brew phase), a late lazy import explodes — seen in the wild
+# as `LookupError: unknown encoding: idna` on the first network call after
+# hours of Xcode downloads. Import the lazy bits NOW, while the on-disk
+# files still match the running process.
+import encodings.idna  # noqa: F401
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from cisetup.main import main  # noqa: E402

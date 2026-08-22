@@ -41,6 +41,9 @@ class BrewEnv:
     prefix: str
     openjdk_prefix: str
     gem_bin: str | None
+    # True when this run installed/upgraded the python3 the setup itself runs
+    # on — the caller must re-exec before anything lazily imports stdlib bits.
+    python_changed: bool = False
 
 
 def _resolve_names(formulae: list[str], casks: list[str]) -> tuple[dict, dict]:
@@ -201,9 +204,13 @@ def ensure(cfg: Config) -> BrewEnv:
 
     gem_bin = _ensure_xcpretty()
 
+    python_canonical = formula_map.get("python3", "python3")
+    python_changed = "python3" in missing_formulae or python_canonical in upgrades
+
     prefix = output(["brew", "--prefix"])
     return BrewEnv(
         prefix=prefix,
         openjdk_prefix=f"{prefix}/opt/openjdk",
         gem_bin=gem_bin,
+        python_changed=python_changed,
     )

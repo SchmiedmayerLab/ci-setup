@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import re
 import sys
 from pathlib import Path
@@ -31,6 +32,15 @@ def cmd_converge(args, repo_root: Path) -> int:
         brew_env = brew.probe()
     else:
         brew_env = brew.ensure(cfg)
+        if brew_env.python_changed and not os.environ.get("CI_SETUP_PY_REEXEC"):
+            # We are running on the interpreter brew just replaced; its lazily
+            # loaded stdlib pieces may no longer exist on disk. Restart onto
+            # the new one before anything trips over that (the re-run's brew
+            # phase is a fast no-op).
+            log("Homebrew updated python3 — re-executing on the new interpreter")
+            script = str(repo_root / "setup.zsh")
+            env = dict(os.environ, CI_SETUP_PY_REEXEC="1")
+            os.execve(script, [script, *_RAW_ARGV], env)
 
     xcode.ensure_sudoless_select()
     xcode.ensure_wwdr_certificate()
@@ -179,7 +189,13 @@ _COMMANDS = {
 }
 
 
+# The verbatim CLI args, kept for self re-exec (see cmd_converge).
+_RAW_ARGV: list[str] = []
+
+
 def main(argv: list[str]) -> int:
+    global _RAW_ARGV
+    _RAW_ARGV = list(argv)
     parser = argparse.ArgumentParser(
         prog="setup.zsh",
         description="Idempotent setup for a self-hosted macOS GitHub Actions runner.",
