@@ -342,6 +342,25 @@ def ensure_job_env(cfg: Config, brew_env: BrewEnv, developer_dir: Path | None) -
     if developer_dir is not None:
         env_updates["DEVELOPER_DIR"] = str(developer_dir)
 
+    # Per-job cleanup hooks (reset simulators, wipe workspaces/caches): the
+    # runner invokes these scripts around every job.
+    hook_keys = (
+        "ACTIONS_RUNNER_HOOK_JOB_STARTED",
+        "ACTIONS_RUNNER_HOOK_JOB_COMPLETED",
+        "CI_SETUP_WORK_DIR",
+    )
+    if cfg.cleanup_hooks:
+        work_dir = Path(cfg.work_dir)
+        if not work_dir.is_absolute():
+            work_dir = cfg.runner_dir / work_dir
+        env_updates.update(
+            {
+                "ACTIONS_RUNNER_HOOK_JOB_STARTED": str(cfg.repo_root / "hooks/job-started.sh"),
+                "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": str(cfg.repo_root / "hooks/job-completed.sh"),
+                "CI_SETUP_WORK_DIR": str(work_dir),
+            }
+        )
+
     changed = False
 
     path_file = cfg.runner_dir / ".path"
@@ -358,6 +377,9 @@ def ensure_job_env(cfg: Config, brew_env: BrewEnv, developer_dir: Path | None) -
                 key, _, value = line.partition("=")
                 existing[key] = value
     merged = existing | env_updates
+    if not cfg.cleanup_hooks:
+        for key in hook_keys:
+            merged.pop(key, None)
     if merged != existing or not env_file.exists():
         env_file.write_text("".join(f"{k}={v}\n" for k, v in merged.items()))
         changed = True

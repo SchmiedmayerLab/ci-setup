@@ -33,6 +33,7 @@ class Config:
     runner_dir: Path = Path()
     work_dir: str = "_work"
     group: str | None = None
+    cleanup_hooks: bool = True
 
     # [xcode]
     xcode_manage: bool = True
@@ -141,6 +142,7 @@ def load(repo_root: Path) -> Config:
     cfg.group = _str(runner, "group", "runner.group") or None
     if cfg.group and cfg.scope != "org":
         raise SetupError('config.toml: runner.group only applies to github.scope = "org"')
+    cfg.cleanup_hooks = bool(runner.get("cleanup_hooks", True))
 
     cfg.xcode_manage = bool(xcode.get("manage", True))
     cfg.xcode_install_beta = bool(xcode.get("install_beta", True))

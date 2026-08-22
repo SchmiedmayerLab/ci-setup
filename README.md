@@ -117,6 +117,20 @@ the next converge.
 ./setup.zsh converge --skip-xcode   # useful while iterating
 ```
 
+## Per-job cleanup
+
+The runner runs two hook scripts around every job (wired via
+`ACTIONS_RUNNER_HOOK_JOB_STARTED`/`_COMPLETED` in the runner's `.env`;
+disable with `runner.cleanup_hooks = false` in `config.toml`):
+
+- [`hooks/job-started.sh`](hooks/job-started.sh) — shuts down and erases all
+  simulators so every job starts from a pristine device state, and exports
+  `selfhosted=true` into `$GITHUB_ENV` so workflows can detect the
+  self-hosted runner (`if: env.selfhosted == 'true'`).
+- [`hooks/job-completed.sh`](hooks/job-completed.sh) — wipes the runner's
+  work directory (all checkouts and build products), clears Periphery's
+  cache, and resets the simulators again.
+
 ## Using the runner in workflows
 
 ```yaml

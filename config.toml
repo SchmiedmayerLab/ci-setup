@@ -13,6 +13,8 @@ labels = []                 # extra labels; self-hosted / macOS / ARM64 (X64 on
 dir = "~/actions-runner"    # where the runner software lives
 work_dir = "_work"          # job workspaces, relative to dir
 # group = "Default"         # org runner group
+cleanup_hooks = true        # reset simulators before each job, wipe
+                            # workspaces/caches after (hooks/*.sh)
 
 [xcode]
 manage = true               # install/maintain Xcode releases via `xcodes`
