@@ -95,7 +95,7 @@ def ensure(cfg: Config) -> None:
     if not util.INTERACTIVE:
         warn(
             "power settings need sudo and were skipped in this unattended run — "
-            "run ./setup.zsh interactively once"
+            "run ./setup interactively once"
         )
         return
     args = [item for pair in diffs.items() for item in pair]

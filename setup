@@ -1,6 +1,6 @@
 #!/bin/zsh
 #
-# setup.zsh — bootstrap + entry point for the self-hosted CI runner setup.
+# setup — bootstrap + entry point for the self-hosted CI runner setup.
 #
 # This script only guarantees the minimal foundation (Xcode Command Line
 # Tools, Homebrew, a modern python3) and then hands off to the Python
@@ -8,13 +8,13 @@
 # change what needs changing.
 #
 # Usage:
-#   ./setup.zsh                        converge the machine (default)
-#   ./setup.zsh status                 show current state
-#   ./setup.zsh store-pat [token]      save a GitHub PAT to the Keychain
+#   ./setup                        converge the machine (default)
+#   ./setup status                 show current state
+#   ./setup store-pat [token]      save a GitHub PAT to the Keychain
 #                                      (without a token: prints the PAT
 #                                      requirements and prompts, input hidden)
-#   ./setup.zsh uninstall              deregister the runner from GitHub
-#   ./setup.zsh converge --non-interactive
+#   ./setup uninstall              deregister the runner from GitHub
+#   ./setup converge --non-interactive
 #                                      what the boot LaunchAgent runs: never
 #                                      prompts, never uses sudo
 
@@ -32,7 +32,7 @@ for arg in "$@"; do
 done
 
 log()  { print -r -- "==> $*" }
-fail() { print -r -- "setup.zsh: error: $*" >&2; exit 1 }
+fail() { print -r -- "setup: error: $*" >&2; exit 1 }
 
 if [[ $(uname -s) != Darwin ]]; then
   fail "this only runs on macOS"
@@ -41,15 +41,70 @@ if (( EUID == 0 )); then
   fail "do not run as root — the runner and its services are per-user"
 fi
 
+# --- store-pat (no bootstrap needed) -----------------------------------------
+# Storing the PAT only needs macOS's own `security`, so handle it before any
+# CLT/Homebrew/python bootstrapping: a factory-fresh Mac can store its PAT
+# first thing. The service name must match KEYCHAIN_SERVICE in cisetup/config.py.
+
+if [[ ${1:-} == store-pat ]]; then
+  readonly KEYCHAIN_SERVICE="github-runner-pat"
+  TOKEN="${2:-}"
+  if [[ -n $TOKEN ]]; then
+    if [[ ! $TOKEN =~ '^[A-Za-z0-9_.=+/~-]+$' ]]; then
+      fail "that does not look like a GitHub PAT"
+    fi
+    # `security -i` reads the command from stdin, keeping the token off
+    # security's argv (it was on setup's argv already — the caller's
+    # choice — but it must not leak any further). The charset check above
+    # guarantees the quoting below cannot be escaped.
+    print -r -- "add-generic-password -U -a \"$USER\" -s \"$KEYCHAIN_SERVICE\" -w \"$TOKEN\"" \
+      | /usr/bin/security -i || fail "could not store the PAT in the Keychain"
+  else
+    cat <<'EOF'
+A GitHub personal access token (PAT) lets the setup register, re-register,
+and deregister the runner via the GitHub API. Required rights:
+
+  repository runner (github.scope = "repo"):
+    classic PAT:       `repo` scope
+    fine-grained PAT:  repository permission "Administration: write"
+
+  organization runner (github.scope = "org"):
+    classic PAT:       `admin:org` scope
+    fine-grained PAT:  organization permission "Self-hosted runners: write"
+
+Prefer a fine-grained PAT limited to exactly the target repo/org.
+Create one at:
+  https://github.com/settings/personal-access-tokens/new   (fine-grained)
+  https://github.com/settings/tokens/new                   (classic)
+
+The token is stored only in this machine's login Keychain (service
+"github-runner-pat") — never in a file or the repo.
+
+Usage:
+  ./setup store-pat            prompt for the token (input hidden)
+  ./setup store-pat <token>    store the given token
+
+EOF
+    if [[ ! -t 0 ]]; then
+      fail "no token given and no terminal to prompt on"
+    fi
+    # `-w` without a value: security itself prompts (hidden, with confirmation).
+    /usr/bin/security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w \
+      || fail "could not store the PAT in the Keychain"
+  fi
+  log "PAT stored in the login Keychain (service: $KEYCHAIN_SERVICE)"
+  exit 0
+fi
+
 # --- Xcode Command Line Tools (needed for git and by Homebrew) --------------
 
 if ! /usr/bin/xcode-select -p &>/dev/null; then
   if (( NONINTERACTIVE )); then
-    fail "Xcode Command Line Tools are missing; run ./setup.zsh interactively once"
+    fail "Xcode Command Line Tools are missing; run ./setup interactively once"
   fi
   log "Xcode Command Line Tools are missing — requesting installation (GUI dialog)."
   /usr/bin/xcode-select --install || true
-  fail "re-run ./setup.zsh once the Command Line Tools installation has finished"
+  fail "re-run ./setup once the Command Line Tools installation has finished"
 fi
 
 # --- Self-update (unattended runs only) --------------------------------------
@@ -67,7 +122,7 @@ if (( NONINTERACTIVE )) && [[ -z ${CI_SETUP_PULLED:-} ]]; then
         log "setup updated ($before -> $after) — re-executing"
         # Guard against re-exec loops; git replaces files by rename, so the
         # currently running copy stayed intact until this point.
-        CI_SETUP_PULLED=1 exec "$SCRIPT_DIR/setup.zsh" "$@"
+        CI_SETUP_PULLED=1 exec "$SCRIPT_DIR/setup" "$@"
       fi
     else
       log "git pull failed (offline? no upstream?) — continuing with the current version"
@@ -91,7 +146,7 @@ find_brew() {
 BREW_BIN="$(find_brew || true)"
 if [[ -z $BREW_BIN ]]; then
   if (( NONINTERACTIVE )); then
-    fail "Homebrew is missing; run ./setup.zsh interactively once"
+    fail "Homebrew is missing; run ./setup interactively once"
   fi
   log "Installing Homebrew (its installer will ask for your password once)."
   typeset installer

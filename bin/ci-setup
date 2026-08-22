@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for the CI runner setup. Normally invoked via ../setup.zsh,
+"""Entry point for the CI runner setup. Normally invoked via ../setup,
 which bootstraps Homebrew and a modern python3 first."""
 
 import pathlib
@@ -8,7 +8,7 @@ import sys
 if sys.version_info < (3, 11):
     sys.exit(
         "ci-setup needs Python 3.11+ (Homebrew python3). "
-        "Run it via ./setup.zsh, which bootstraps that."
+        "Run it via ./setup, which bootstraps that."
     )
 
 # Python loads codecs lazily. If Homebrew upgrades this very interpreter

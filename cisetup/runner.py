@@ -244,7 +244,7 @@ def _registration_token(cfg: Config) -> str:
     if cfg.pat:
         return github_api.registration_token(cfg)
     print()
-    print("No GitHub PAT is available (see `./setup.zsh store-pat`).")
+    print("No GitHub PAT is available (see `./setup store-pat`).")
     print(f"Get a registration token manually from:\n  {cfg.new_runner_page}")
     print("(it is the value after --token in the shown ./config.sh command)")
     token = prompt("Registration token: ")
@@ -257,7 +257,7 @@ def _removal_token(cfg: Config) -> str:
     if cfg.pat:
         return github_api.removal_token(cfg)
     print()
-    print("No GitHub PAT is available (see `./setup.zsh store-pat`).")
+    print("No GitHub PAT is available (see `./setup store-pat`).")
     print(f"Get a removal token from the runner's page under:\n  {cfg.runners_settings_page}")
     token = prompt("Removal token: ")
     if not token:

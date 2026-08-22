@@ -1,6 +1,6 @@
 # Shared configuration for every SchmiedmayerLab runner Mac. This file is
 # committed — it must never contain secrets. The GitHub PAT lives in each
-# machine's login Keychain instead (./setup.zsh store-pat).
+# machine's login Keychain instead (./setup store-pat).
 
 [github]
 scope = "org"               # runners are registered org-wide

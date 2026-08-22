@@ -1,4 +1,4 @@
-"""A per-user LaunchAgent that re-runs `setup.zsh converge --non-interactive`
+"""A per-user LaunchAgent that re-runs `setup converge --non-interactive`
 at every login (with auto-login: every boot), so the runner re-converges and
 re-registers itself without anyone touching the machine. No sudo involved."""
 
@@ -14,7 +14,7 @@ from .util import STATE_DIR, ok, run, warn
 LOG_PATH = Path.home() / "Library/Logs/ci-runner-setup.log"
 
 # Set inside the agent's plist; lets a converge detect that it IS the boot
-# agent's process (setup.zsh execs into python, so launchd tracks our PID).
+# agent's process (setup execs into python, so launchd tracks our PID).
 _MARKER_ENV = "CI_SETUP_BOOT_AGENT"
 
 # Records which label we last installed, so renaming boot.label (or disabling
@@ -35,7 +35,7 @@ def _plist_bytes(cfg: Config) -> bytes:
         {
             "Label": cfg.boot_label,
             "ProgramArguments": [
-                str(cfg.repo_root / "setup.zsh"),
+                str(cfg.repo_root / "setup"),
                 "converge",
                 "--non-interactive",
             ],

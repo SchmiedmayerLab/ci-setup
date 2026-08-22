@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
-import re
 import sys
 from pathlib import Path
 
 from . import boot, brew, config, power, runner, util, xcode
-from .config import KEYCHAIN_SERVICE
-from .util import SetupError, err, log, ok, run, warn
+from .util import SetupError, err, log, ok, warn
 
 
 def cmd_converge(args, repo_root: Path) -> int:
@@ -42,7 +39,7 @@ def cmd_converge(args, repo_root: Path) -> int:
             # the new one before anything trips over that (the re-run's brew
             # phase is a fast no-op).
             log("Homebrew updated python3 — re-executing on the new interpreter")
-            script = str(repo_root / "setup.zsh")
+            script = str(repo_root / "setup")
             env = dict(os.environ, CI_SETUP_PY_REEXEC="1")
             os.execve(script, [script, *_RAW_ARGV], env)
 
@@ -77,16 +74,16 @@ def cmd_status(args, repo_root: Path) -> int:
     print(f"  name:     {cfg.runner_name}")
 
     if not cfg.runner_dir.exists():
-        print(f"  runner:   not installed ({cfg.runner_dir} missing) — run ./setup.zsh")
+        print(f"  runner:   not installed ({cfg.runner_dir} missing) — run ./setup")
         return 0
     version = runner.installed_version(cfg.runner_dir)
     print(f"  version:  {'v' + util.fmt_version(version) if version else 'unknown'}")
 
     if runner.is_registered(cfg):
         drift = runner.recorded_state(cfg) != runner.desired_state(cfg)
-        print(f"  registered: yes{' (config drift — run ./setup.zsh)' if drift else ''}")
+        print(f"  registered: yes{' (config drift — run ./setup)' if drift else ''}")
     else:
-        print("  registered: no — run ./setup.zsh")
+        print("  registered: no — run ./setup")
 
     if runner.service_installed(cfg):
         running = runner.service_running(cfg)
@@ -107,63 +104,13 @@ def cmd_status(args, repo_root: Path) -> int:
     return 0
 
 
-_PAT_REQUIREMENTS = f"""\
-A GitHub personal access token (PAT) lets the setup register, re-register,
-and deregister the runner via the GitHub API. Required rights:
-
-  repository runner (github.scope = "repo"):
-    classic PAT:       `repo` scope
-    fine-grained PAT:  repository permission "Administration: write"
-
-  organization runner (github.scope = "org"):
-    classic PAT:       `admin:org` scope
-    fine-grained PAT:  organization permission "Self-hosted runners: write"
-
-Prefer a fine-grained PAT limited to exactly the target repo/org.
-Create one at:
-  https://github.com/settings/personal-access-tokens/new   (fine-grained)
-  https://github.com/settings/tokens/new                   (classic)
-
-The token is stored only in this machine's login Keychain (service
-"{KEYCHAIN_SERVICE}") — never in a file or the repo.
-
-Usage:
-  ./setup.zsh store-pat            prompt for the token (input hidden)
-  ./setup.zsh store-pat <token>    store the given token
-"""
-
-
 def cmd_store_pat(args, repo_root: Path) -> int:
-    if args.token:
-        if not re.fullmatch(r"[A-Za-z0-9_.=+/~-]+", args.token):
-            raise SetupError("that does not look like a GitHub PAT")
-        # `security -i` reads the command from stdin, keeping the token off
-        # security's argv (it was on setup.zsh's argv already — the caller's
-        # choice — but it should not leak any further).
-        run(
-            ["security", "-i"],
-            input=(
-                f'add-generic-password -U -a "{getpass.getuser()}" '
-                f'-s "{KEYCHAIN_SERVICE}" -w "{args.token}"\n'
-            ),
-            capture=True,
-        )
-    else:
-        print(_PAT_REQUIREMENTS)
-        util.require_interactive("prompting for a PAT")
-        # `-w` without a value makes `security` prompt for the secret itself
-        # (hidden, with confirmation) — the PAT never appears in any argv.
-        run(
-            [
-                "security", "add-generic-password",
-                "-U",
-                "-a", getpass.getuser(),
-                "-s", KEYCHAIN_SERVICE,
-                "-w",
-            ]
-        )
-    ok(f"PAT stored in the login Keychain (service: {KEYCHAIN_SERVICE})")
-    return 0
+    # Implemented natively in ./setup (zsh) so a factory-fresh Mac can store
+    # its PAT without bootstrapping Homebrew/python3 first; delegate so a
+    # direct `bin/ci-setup store-pat` behaves identically. ./setup intercepts
+    # store-pat before ever exec'ing python, so this cannot loop.
+    script = str(repo_root / "setup")
+    os.execv(script, [script, "store-pat", *([args.token] if args.token else [])])
 
 
 def cmd_uninstall(args, repo_root: Path) -> int:
@@ -202,7 +149,7 @@ def main(argv: list[str]) -> int:
     global _RAW_ARGV
     _RAW_ARGV = list(argv)
     parser = argparse.ArgumentParser(
-        prog="setup.zsh",
+        prog="setup",
         description="Idempotent setup for a self-hosted macOS GitHub Actions runner.",
     )
     parser.add_argument(

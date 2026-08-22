@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .util import SetupError, output, warn
 
-# `./setup.zsh store-pat` saves the PAT under this Keychain service name and
+# `./setup store-pat` saves the PAT under this Keychain service name and
 # converge picks it up automatically.
 KEYCHAIN_SERVICE = "github-runner-pat"
 
@@ -24,7 +24,7 @@ class Config:
     owner: str = ""
     repo: str | None = None
     # Resolved at runtime from the Keychain (never from config.toml, which is
-    # meant to be committed to git): see resolve_pat() / `setup.zsh store-pat`.
+    # meant to be committed to git): see resolve_pat() / `setup store-pat`.
     pat: str | None = None
 
     # [runner]
@@ -123,7 +123,7 @@ def load(repo_root: Path) -> Config:
         raise SetupError(
             "config.toml: PATs are not read from the config file (it is meant "
             "to be committed) — store the PAT in the Keychain via "
-            "`./setup.zsh store-pat` instead"
+            "`./setup store-pat` instead"
         )
 
     default_name = socket.gethostname().split(".")[0] or "mac-runner"

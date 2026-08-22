@@ -119,7 +119,7 @@ def output(cmd: list, **kwargs) -> str:
 def require_interactive(what: str) -> None:
     if not INTERACTIVE:
         raise SetupError(
-            f"{what} requires an interactive run — invoke ./setup.zsh manually on the machine"
+            f"{what} requires an interactive run — invoke ./setup manually on the machine"
         )
 
 

@@ -185,7 +185,7 @@ def ensure_sudoless_select() -> None:
     if not util.INTERACTIVE:
         warn(
             "passwordless xcode-select rule missing (needs one interactive "
-            "./setup.zsh run to install)"
+            "./setup run to install)"
         )
         return
     log("Installing passwordless xcode-select sudoers rule (sudo)")
@@ -258,7 +258,7 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
             elif not _unattended_first_launch(developer_dir):
                 warn(
                     f"Xcode {release.identifier}: first-launch setup failed without sudo "
-                    "— run ./setup.zsh interactively once"
+                    "— run ./setup interactively once"
                 )
                 return
         recheck = run(
@@ -342,7 +342,7 @@ def ensure(cfg: Config) -> Path | None:
             if result.returncode != 0:
                 warn(
                     f"could not install Xcode {release.identifier} unattended "
-                    "(Apple ID session expired?) — run ./setup.zsh interactively"
+                    "(Apple ID session expired?) — run ./setup interactively"
                 )
 
     installed = parse_installed(output(["xcodes", "installed"]))
@@ -474,7 +474,7 @@ def _ensure_global_selection(developer_dir: Path) -> None:
     else:
         warn(
             "could not update the global xcode-select (sudoers rule missing? "
-            "run ./setup.zsh interactively once)"
+            "run ./setup interactively once)"
         )
 
 
@@ -511,7 +511,7 @@ def ensure_wwdr_certificate() -> None:
         if not util.INTERACTIVE:
             warn(
                 "WWDR intermediate certificate missing (needs one interactive "
-                "./setup.zsh run to install)"
+                "./setup run to install)"
             )
             return
         log("Installing the Apple WWDR intermediate certificate (sudo)")

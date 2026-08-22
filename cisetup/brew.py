@@ -121,7 +121,7 @@ def _remove_autoupdate() -> None:
 def probe() -> BrewEnv:
     """Just resolve paths, without installing anything (used by --skip-brew)."""
     if not shutil.which("brew"):
-        raise SetupError("Homebrew not found on PATH — run via ./setup.zsh")
+        raise SetupError("Homebrew not found on PATH — run via ./setup")
     prefix = output(["brew", "--prefix"])
     openjdk_prefix = f"{prefix}/opt/openjdk"
     gem_bin = None
@@ -133,7 +133,7 @@ def probe() -> BrewEnv:
 def ensure(cfg: Config) -> BrewEnv:
     log("Homebrew packages")
     if not shutil.which("brew"):
-        raise SetupError("Homebrew not found on PATH — run via ./setup.zsh")
+        raise SetupError("Homebrew not found on PATH — run via ./setup")
 
     formulae = FORMULAE + [f for f in cfg.brew_extra_formulae if f not in FORMULAE]
     casks = CASKS + [c for c in cfg.brew_extra_casks if c not in CASKS]

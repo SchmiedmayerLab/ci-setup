@@ -53,18 +53,18 @@ plain SSH).
 5. Store the PAT in the Keychain:
 
    ```sh
-   ./setup.zsh store-pat
+   ./setup store-pat
    ```
 
-   Note: whichever `./setup.zsh` command runs first also bootstraps Homebrew
-   and python3 — so this step already triggers the Homebrew installer and its
-   one-time password prompt.
+   `store-pat` needs nothing but macOS itself (no Homebrew/python bootstrap),
+   so this works first thing on a factory-fresh machine. Run it bare to see
+   the PAT requirements.
 
 6. Run the setup (expect a long first run — Xcode + simulators are tens of
    GB; keep ~150 GB of disk free):
 
    ```sh
-   ./setup.zsh
+   ./setup
    ```
 
    The first run will interactively ask for: your Apple ID (Xcode downloads
@@ -77,12 +77,12 @@ plain SSH).
    machine must log in by itself after a reboot/power failure.
 
 Verify: the runner shows as *Idle* under the repo/org's
-**Settings → Actions → Runners**, and `./setup.zsh status` reports
+**Settings → Actions → Runners**, and `./setup status` reports
 everything green.
 
 ## How re-running works (idempotency)
 
-`./setup.zsh` (command `converge`, the default) converges every phase and
+`./setup` (command `converge`, the default) converges every phase and
 skips whatever is already correct:
 
 | Phase | Re-run behaviour |
@@ -100,7 +100,7 @@ A lock file guarantees a manual run and the boot-time run never overlap.
 ## The boot agent (automatic re-runs)
 
 `converge` installs `~/Library/LaunchAgents/com.selfhosted-runner.setup.plist`,
-which runs `setup.zsh converge --non-interactive` at every login **and every
+which runs `setup converge --non-interactive` at every login **and every
 6 hours**, so long-lived login sessions still pick up new Xcode releases,
 runner updates, and config changes. No quiet-hour scheduling is needed (the
 team spans too many time zones for one to exist): disruptive steps defer
@@ -123,12 +123,12 @@ the next converge.
 ## Commands
 
 ```sh
-./setup.zsh                # converge (default)
-./setup.zsh status         # show runner/service/Xcode state
-./setup.zsh store-pat      # print PAT requirements, prompt for it (hidden)
-./setup.zsh store-pat TOKEN  # store the given PAT directly
-./setup.zsh uninstall      # deregister runner, remove services (asks first)
-./setup.zsh converge --skip-xcode   # useful while iterating
+./setup                # converge (default)
+./setup status         # show runner/service/Xcode state
+./setup store-pat      # print PAT requirements, prompt for it (hidden)
+./setup store-pat TOKEN  # store the given PAT directly
+./setup uninstall      # deregister runner, remove services (asks first)
+./setup converge --skip-xcode   # useful while iterating
 ```
 
 ## Per-job cleanup
@@ -184,10 +184,10 @@ Jobs needing a specific Xcode can override it:
 - **Boot-time run did something odd** → `~/Library/Logs/ci-runner-setup.log`.
 - **Runner offline after reboot** → is auto-login enabled (step 7)? LaunchAgents
   only start once the user session exists.
-- **`xcodes` asks for Apple ID again** → sessions expire; run `./setup.zsh`
+- **`xcodes` asks for Apple ID again** → sessions expire; run `./setup`
   interactively once.
 - **Service state** → `cd ~/actions-runner && ./svc.sh status`; runner logs in
   `~/actions-runner/_diag/`.
-- **Changed `runner.dir` in config.toml** → run `./setup.zsh uninstall` with
+- **Changed `runner.dir` in config.toml** → run `./setup uninstall` with
   the old config first, then converge; otherwise the old registration is
   orphaned.
