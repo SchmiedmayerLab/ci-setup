@@ -55,6 +55,24 @@ class ParseListTests(unittest.TestCase):
         releases = parse_list("something else\n\nUpdated Xcode list\n16.4 (16F6)\n")
         self.assertEqual([r.identifier for r in releases], ["16.4"])
 
+    def test_xcodes_2x_architecture_labels(self):
+        # xcodes 2.0.1+ appends [Universal]/[Apple Silicon]/[Intel] after the
+        # build, before any (Installed...) annotation, plus a trailing hint.
+        listing = (
+            "16.4 (16F6) [Universal]\n"
+            "26.0 Beta 5 (17A5295f) [Apple Silicon]\n"
+            "26.1 (17B35) [Universal] (Installed, Selected)\n"
+            "Showing Xcodes for this Mac by default. "
+            "Switch with `--architecture arm64`.\n"
+        )
+        releases = parse_list(listing)
+        self.assertEqual(
+            [r.identifier for r in releases],
+            ["16.4", "26.0 Beta 5", "26.1"],
+        )
+        self.assertEqual(releases[2].build, "17B35")
+        self.assertEqual(releases[2].pre, ())
+
 
 class SelectDesiredTests(unittest.TestCase):
     def _ids(self, listing, install_beta=True):
@@ -120,6 +138,23 @@ class ParseInstalledTests(unittest.TestCase):
         installed = parse_installed(text)
         self.assertEqual(installed[0].identifier, "16.4")
         self.assertEqual(installed[0].path, "/Applications/Xcode 16.4.app")
+
+    def test_xcodes_2x_architecture_labels(self):
+        text = (
+            "16.4 (16F6) [Universal]\t/Applications/Xcode-16.4.0.app\n"
+            "26.0 (17A324) [Apple Silicon] (Selected)  /Applications/Xcode.app\n"
+            "26.0 Beta 5 (17A5295f) [Apple Silicon]\t/Applications/Xcode-26.0.0-Beta.5.app\n"
+        )
+        installed = parse_installed(text)
+        self.assertEqual(
+            [(i.identifier, i.path) for i in installed],
+            [
+                ("16.4", "/Applications/Xcode-16.4.0.app"),
+                ("26.0", "/Applications/Xcode.app"),
+                ("26.0 Beta 5", "/Applications/Xcode-26.0.0-Beta.5.app"),
+            ],
+        )
+        self.assertEqual(installed[1].build, "17A324")
 
 
 class SortKeyTests(unittest.TestCase):

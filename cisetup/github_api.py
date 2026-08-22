@@ -30,7 +30,13 @@ def _request(method: str, path: str, pat: str | None):
             request.add_header("Authorization", f"Bearer {pat}")
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return json.load(response)
+                try:
+                    return json.load(response)
+                except json.JSONDecodeError as e:
+                    raise SetupError(
+                        f"GitHub API {method} {path}: response was not valid JSON "
+                        f"(intercepting proxy?) — {e}"
+                    ) from e
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:300]
             if e.code >= 500 and attempt < 2:

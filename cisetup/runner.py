@@ -65,14 +65,23 @@ def installed_version(runner_dir: Path) -> tuple[int, ...] | None:
 
 def ensure_installed(cfg: Config) -> None:
     log("Actions runner")
-    release = github_api.latest_runner_release(cfg.pat)
+    current = installed_version(cfg.runner_dir)
+    try:
+        release = github_api.latest_runner_release(cfg.pat)
+    except SetupError as e:
+        if current:
+            # Offline/rate-limited must not stop the local healing phases;
+            # the runner also self-updates on its own.
+            warn(f"could not check for runner updates — keeping v{fmt_version(current)} ({e})")
+            return
+        raise
+
     latest_str = release.get("tag_name", "").lstrip("v")
     try:
         latest = vtuple(latest_str)
     except ValueError:
         raise SetupError(f"unexpected runner release tag: {release.get('tag_name')!r}") from None
 
-    current = installed_version(cfg.runner_dir)
     if current and current >= latest:
         ok(f"runner v{fmt_version(current)} is current (latest: v{latest_str})")
         return
@@ -85,14 +94,33 @@ def ensure_installed(cfg: Config) -> None:
             for asset in release.get("assets", [])
             if asset.get("name") == asset_name
         ),
-        f"https://github.com/actions/runner/releases/download/v{latest_str}/{asset_name}",
+        None,
     )
+    if not asset_url:
+        raise SetupError(
+            f"release v{latest_str} has no asset named {asset_name} — "
+            "the runner's release layout changed; update this script"
+        )
 
     # The release notes embed per-asset SHA-256 hashes as HTML comments.
+    # Fail closed: no published checksum, no unattended install.
     sha_match = re.search(
         rf"<!-- BEGIN SHA {re.escape(plat)} -->([0-9a-fA-F]{{64}})",
         release.get("body") or "",
     )
+    if not sha_match:
+        if not (
+            util.INTERACTIVE
+            and util.confirm(
+                f"No SHA-256 for {asset_name} in the v{latest_str} release notes. "
+                "Install unverified anyway?",
+                default=False,
+            )
+        ):
+            raise SetupError(
+                f"no SHA-256 for {asset_name} in the v{latest_str} release notes — "
+                "refusing to install unverified"
+            )
 
     if current:
         log(f"Updating runner v{fmt_version(current)} -> v{latest_str}")
@@ -110,8 +138,6 @@ def ensure_installed(cfg: Config) -> None:
                     f"expected {sha_match.group(1).lower()}"
                 )
             ok("checksum verified")
-        else:
-            warn("no checksum found in the release notes — skipping verification")
 
         stop_service(cfg)
         cfg.runner_dir.mkdir(parents=True, exist_ok=True)
@@ -221,8 +247,9 @@ def _removal_token(cfg: Config) -> str:
     return token
 
 
-def _register(cfg: Config) -> None:
-    token = _registration_token(cfg)
+def _register(cfg: Config, token: str | None = None) -> None:
+    if token is None:
+        token = _registration_token(cfg)
     args = [
         "./config.sh",
         "--unattended",
@@ -243,8 +270,12 @@ def _register(cfg: Config) -> None:
 
 
 def deregister(cfg: Config) -> None:
-    uninstall_service(cfg)
+    # Get the removal token BEFORE any teardown: if no token is obtainable
+    # (missing/expired PAT, unattended run), the existing service must keep
+    # running instead of being left uninstalled. Tokens live for an hour —
+    # far longer than the teardown takes.
     token = _removal_token(cfg)
+    uninstall_service(cfg)
     result = run(
         ["./config.sh", "remove", "--token", token], cwd=cfg.runner_dir, check=False
     )
@@ -263,10 +294,24 @@ def ensure_registered(cfg: Config) -> None:
         ok(f"runner '{cfg.runner_name}' registered with {cfg.github_url}")
         return
     if is_registered(cfg):
+        if not cfg.pat and not util.INTERACTIVE:
+            # Never tear down a working registration unattended when the
+            # re-registration afterwards could not possibly succeed.
+            warn(
+                "runner configuration drifted, but no PAT is available for "
+                "unattended re-registration — keeping the current registration"
+            )
+            return
         log("Runner configuration changed — re-registering")
+        # Fetch the new registration token BEFORE tearing anything down, so a
+        # token failure leaves the current registration and service running.
+        new_token = _registration_token(cfg)
         deregister(cfg)
-    log(f"Registering runner '{cfg.runner_name}' with {cfg.github_url}")
-    _register(cfg)
+        log(f"Registering runner '{cfg.runner_name}' with {cfg.github_url}")
+        _register(cfg, token=new_token)
+    else:
+        log(f"Registering runner '{cfg.runner_name}' with {cfg.github_url}")
+        _register(cfg)
     ok("runner registered")
 
 

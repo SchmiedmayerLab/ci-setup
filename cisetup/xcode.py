@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,23 +14,29 @@ from . import util
 from .config import Config
 from .util import SetupError, log, ok, output, run, warn
 
-# Matches `xcodes list` lines such as:
+# Matches `xcodes list` lines. xcodes 2.0.1+ appends a bracketed architecture
+# label after the build; 1.x has none. Annotations like "(Installed, Selected)"
+# may follow. Examples:
 #   16.4 (16F6)
-#   16.4 (16F6) (Installed)
-#   26.0 Beta 5 (17A5295f)
+#   16.4 (16F6) [Universal] (Installed)
+#   26.0 Beta 5 (17A5295f) [Apple Silicon]
 #   26.1 Release Candidate (17B35)
+# The architecture label must NOT become part of the identifier — identifiers
+# are passed to `xcodes install` and compared against `xcodes installed`.
 _LIST_RE = re.compile(
     r"^(?P<version>\d+(?:\.\d+){0,2})"
     r"(?P<pre> Beta(?: \d+)?| Release Candidate(?: \d+)?)?"
     r" \((?P<build>[0-9A-Za-z]+)\)"
+    r"(?: \[[^\]]*\])?"
     r"(?P<annotations>(?: \([^)]*\))*)\s*$"
 )
 
-# Matches `xcodes installed` lines such as:
+# Matches `xcodes installed` lines (same optional arch label / annotations):
 #   16.4 (16F6)          /Applications/Xcode-16.4.0.app
-#   26.0 Beta 5 (17A5295f) (Selected) /Applications/Xcode-26.0.0-Beta.5.app
+#   26.0 (17A324) [Apple Silicon] (Selected)  /Applications/Xcode.app
 _INSTALLED_RE = re.compile(
     r"^(?P<identifier>.+?) \((?P<build>[0-9A-Za-z]+)\)"
+    r"(?: \[[^\]]*\])?"
     r"(?: \([^)]*\))*"
     r"\s+(?P<path>/.+?)\s*$"
 )
@@ -162,9 +169,11 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
             # Typically means the license/packages need admin rights.
             if util.INTERACTIVE:
                 log(f"Xcode {release.identifier}: retrying first-launch setup with sudo")
+                # Invoke this Xcode's own xcodebuild: sudo's env_reset would
+                # strip a DEVELOPER_DIR passed via the environment, silently
+                # running first-launch against the wrong Xcode.
                 util.sudo_run(
-                    ["/usr/bin/xcodebuild", "-runFirstLaunch"],
-                    env=dict(os.environ, DEVELOPER_DIR=str(developer_dir)),
+                    [developer_dir / "usr/bin/xcodebuild", "-runFirstLaunch"]
                 )
             else:
                 warn(
@@ -172,6 +181,14 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
                     "— run ./setup.zsh interactively once"
                 )
                 return
+        recheck = run(
+            ["/usr/bin/xcodebuild", "-checkFirstLaunchStatus"],
+            env=dict(os.environ, DEVELOPER_DIR=str(developer_dir)),
+            check=False,
+            capture=True,
+        )
+        if recheck.returncode != 0:
+            warn(f"Xcode {release.identifier}: first-launch setup still incomplete")
 
     platforms = cfg.xcode_platforms
     if not platforms:
@@ -206,6 +223,11 @@ def ensure(cfg: Config) -> Path | None:
     if not cfg.xcode_manage:
         return None
     log("Xcode releases")
+
+    if shutil.which("xcodes") is None:
+        warn("`xcodes` is not installed yet — skipping the Xcode phase "
+             "(converge without --skip-brew installs it)")
+        return None
 
     # Refresh the release list; fall back to the cached one when offline.
     refresh = run(["xcodes", "update"], check=False, capture=True)

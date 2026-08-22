@@ -18,7 +18,8 @@ repo  = "my-repo"           # only used when scope = "repo"
 
 [runner]
 # name = "my-mac-mini"      # default: this machine's hostname
-labels = []                 # extra labels; self-hosted / macOS / ARM64 are automatic
+labels = []                 # extra labels; self-hosted / macOS / ARM64 (X64 on
+                            # Intel) are added automatically
 dir = "~/actions-runner"    # where the runner software lives
 work_dir = "_work"          # job workspaces, relative to dir
 # group = "Default"         # org runner group (scope = "org" only)
@@ -31,7 +32,8 @@ platforms = ["all"]         # per-Xcode simulator/SDK downloads: ["all"], a list
 
 [brew]
 extra_formulae = []         # installed in addition to the built-in tool list
-extra_casks = []            # note: many casks need sudo to install
+extra_casks = []            # note: many casks need sudo to install; unattended
+                            # (boot-time) runs therefore skip cask installs/upgrades
 
 [boot]
 install_agent = true        # re-run this setup at every login/boot (LaunchAgent)

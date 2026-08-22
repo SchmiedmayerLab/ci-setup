@@ -25,15 +25,17 @@ every reboot so the machine heals itself.
 
 ## Setting up a new runner Mac
 
-Steps 1–2 happen once in GitHub; 3–7 on the Mac (Terminal.app on the machine
-itself or via Screen Sharing — launchd agents cannot be loaded over plain SSH).
+Step 1 happens once in GitHub; everything else on the Mac (Terminal.app on the
+machine itself or via Screen Sharing — launchd agents cannot be loaded over
+plain SSH).
 
 1. Create a PAT that can manage self-hosted runners:
    classic PAT with `repo` scope (repo-level runner) or `admin:org`
    (org-level); fine-grained PAT with repo **Administration: write** or org
    **Self-hosted runners: write**.
-2. Log the Mac into iCloud? Not needed — but have an **Apple ID** ready
-   (any developer account) for the Xcode downloads.
+2. Have an **Apple ID** ready (a free developer account is enough) — `xcodes`
+   needs it once to download Xcode. The Mac does not need to be signed into
+   iCloud.
 3. Clone this repo (the `git clone` triggers the Xcode Command Line Tools
    install dialog on a fresh machine — accept it, then clone again):
 
@@ -55,6 +57,10 @@ itself or via Screen Sharing — launchd agents cannot be loaded over plain SSH)
    ./setup.zsh store-pat
    ```
 
+   Note: whichever `./setup.zsh` command runs first also bootstraps Homebrew
+   and python3 — so this step already triggers the Homebrew installer and its
+   one-time password prompt.
+
 6. Run the setup (expect a long first run — Xcode + simulators are tens of
    GB; keep ~150 GB of disk free):
 
@@ -62,10 +68,9 @@ itself or via Screen Sharing — launchd agents cannot be loaded over plain SSH)
    ./setup.zsh
    ```
 
-   The first run will interactively ask for: your password (Homebrew
-   installer), your Apple ID (Xcode downloads via `xcodes`; the session is
-   cached in the Keychain), and possibly sudo for Xcode's first-launch
-   package installation.
+   The first run will interactively ask for: your Apple ID (Xcode downloads
+   via `xcodes`; the session is cached in the Keychain), and possibly sudo
+   for Xcode's first-launch package installation.
 
 7. Enable **auto-login** for this user (System Settings → Users & Groups →
    Automatically log in as…; requires FileVault to be off). The runner and
@@ -98,8 +103,11 @@ A lock file guarantees a manual run and the boot-time run never overlap.
 which runs `setup.zsh converge --non-interactive` at every login. In this
 mode the setup **never prompts and never uses sudo**; anything that would
 need either (a brand-new Xcode's first-launch step, an expired Apple ID
-session) is skipped with a warning and left for the next manual run.
-Output lands in `~/Library/Logs/ci-runner-setup.log`.
+session, a re-registration without a usable PAT) is skipped with a warning
+and left for the next manual run — an unattended run never tears down a
+working runner. Output lands in `~/Library/Logs/ci-runner-setup.log`.
+Setting `boot.install_agent = false` in `config.toml` removes the agent on
+the next converge.
 
 ## Commands
 
@@ -116,7 +124,8 @@ Output lands in `~/Library/Logs/ci-runner-setup.log`.
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, macOS, ARM64]   # plus any labels from config.toml
+    # ARM64 on Apple Silicon, X64 on an Intel Mac; plus labels from config.toml
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
       - run: xcodebuild build -scheme MyApp   # uses the wired DEVELOPER_DIR
@@ -129,10 +138,15 @@ Jobs needing a specific Xcode can override it:
 
 - **Never attach self-hosted runners to a public repository** — fork PRs
   could execute arbitrary code on this machine.
-- The PAT lives in the login Keychain (`github-runner-pat`), not on disk.
-  `config.toml` is gitignored regardless.
-- Runner tarballs are SHA-256-verified against the official release notes.
-- Registration/removal tokens are short-lived (1 h) and never stored.
+- The PAT lives in the login Keychain (`github-runner-pat`), not on disk —
+  but be aware that **CI jobs run as the same user** and can read that
+  Keychain item while the session is unlocked (always, on an auto-login CI
+  box). Use a fine-grained PAT limited to runner administration on exactly
+  this repo/org so a compromised job can't do more than re-register runners.
+- Runner tarballs are SHA-256-verified against the official release notes;
+  installation fails closed if no checksum is published.
+- Registration/removal tokens are short-lived (1 h), never stored, and
+  redacted from error messages/logs.
 
 ## Troubleshooting
 

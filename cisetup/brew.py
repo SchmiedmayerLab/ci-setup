@@ -66,9 +66,13 @@ def _resolve_names(formulae: list[str], casks: list[str]) -> tuple[dict, dict]:
             alias_to_name[old] = formula["name"]
     token_map = {cask["token"]: cask["token"] for cask in info.get("casks", [])}
     for name in formulae:
-        formula_map[name] = alias_to_name.get(name, name)
+        # Tap-qualified names ("user/tap/tool") appear as short names in
+        # `brew list` output; compare on the short name.
+        fallback = name.rsplit("/", 1)[-1]
+        formula_map[name] = alias_to_name.get(name) or alias_to_name.get(fallback) or fallback
     for name in casks:
-        cask_map[name] = token_map.get(name, name)
+        fallback = name.rsplit("/", 1)[-1]
+        cask_map[name] = token_map.get(name) or token_map.get(fallback) or fallback
     return formula_map, cask_map
 
 
@@ -131,7 +135,14 @@ def ensure(cfg: Config) -> BrewEnv:
     if casks:
         installed_casks = set(output(["brew", "list", "--cask", "-1"], check=False).split())
         missing_casks = [c for c in casks if cask_map[c] not in installed_casks]
-        if missing_casks:
+        if missing_casks and not util.INTERACTIVE:
+            # Cask installers frequently sudo; keep the unattended run alive
+            # and leave them for the next manual converge.
+            warn(
+                f"skipping cask install in unattended mode (may need sudo): "
+                f"{', '.join(missing_casks)}"
+            )
+        elif missing_casks:
             log(f"Installing casks: {', '.join(missing_casks)} (may require sudo)")
             run(["brew", "install", "--cask", *missing_casks])
 
@@ -146,7 +157,12 @@ def ensure(cfg: Config) -> BrewEnv:
             output(["brew", "outdated", "--cask", "--quiet"], check=False).split()
         )
         cask_upgrades = sorted({cask_map[c] for c in casks} & outdated_casks)
-        if cask_upgrades:
+        if cask_upgrades and not util.INTERACTIVE:
+            warn(
+                f"skipping cask upgrade in unattended mode (may need sudo): "
+                f"{', '.join(cask_upgrades)}"
+            )
+        elif cask_upgrades:
             log(f"Upgrading casks: {', '.join(cask_upgrades)}")
             run(["brew", "upgrade", "--cask", *cask_upgrades])
 

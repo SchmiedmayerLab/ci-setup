@@ -69,7 +69,10 @@ if [[ -z $BREW_BIN ]]; then
     fail "Homebrew is missing; run ./setup.zsh interactively once"
   fi
   log "Installing Homebrew (its installer will ask for your password once)."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  typeset installer
+  installer="$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+    || fail "could not download the Homebrew installer (no network?)"
+  /bin/bash -c "$installer"
   BREW_BIN="$(find_brew || true)"
   if [[ -z $BREW_BIN ]]; then
     fail "Homebrew installation did not complete"

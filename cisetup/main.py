@@ -13,16 +13,18 @@ from .util import SetupError, err, log, ok, run, warn
 
 
 def cmd_converge(args, repo_root: Path) -> int:
-    if not util.acquire_lock():
-        log("another ci-setup run is already in progress — nothing to do")
+    holder = util.acquire_lock()
+    if holder is not None:
+        log(f"another ci-setup run is already in progress ({holder}) — nothing to do")
         return 0
 
     cfg = config.load(repo_root)
     cfg.pat = config.resolve_pat(cfg)
     if not cfg.pat and not util.INTERACTIVE:
-        # Not fatal: only (re-)registration strictly needs a token, and an
-        # already-registered runner converges fine without one.
-        warn("no GitHub PAT available — any needed (re-)registration would fail")
+        # Not fatal: an already-registered runner converges fine without a
+        # token — but registration and drift-triggered re-registration are
+        # deferred until a PAT is available (see runner.ensure_registered).
+        warn("no GitHub PAT available — (re-)registration will be skipped if needed")
 
     if args.skip_brew:
         brew_env = brew.probe()
@@ -92,24 +94,26 @@ def cmd_store_pat(args, repo_root: Path) -> int:
     print("The PAT needs admin rights on the runner scope:")
     print("  classic PAT:      `repo` scope (repo runners) / `admin:org` (org runners)")
     print("  fine-grained PAT: repo 'Administration: write' / org 'Self-hosted runners: write'")
-    pat = getpass.getpass("Paste the PAT (input hidden): ").strip()
-    if not pat:
-        raise SetupError("no PAT entered")
+    # `-w` without a value makes `security` prompt for the secret itself
+    # (hidden, with confirmation) — the PAT never appears in any argv.
     run(
         [
             "security", "add-generic-password",
             "-U",
             "-a", getpass.getuser(),
             "-s", KEYCHAIN_SERVICE,
-            "-w", pat,
-        ],
-        capture=True,
+            "-w",
+        ]
     )
     ok(f"PAT stored in the login Keychain (service: {KEYCHAIN_SERVICE})")
     return 0
 
 
 def cmd_uninstall(args, repo_root: Path) -> int:
+    holder = util.acquire_lock()
+    if holder is not None:
+        warn(f"another ci-setup run is in progress ({holder}) — wait for it to finish")
+        return 1
     cfg = config.load(repo_root)
     cfg.pat = config.resolve_pat(cfg)
     if not util.confirm(

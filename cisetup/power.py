@@ -15,14 +15,21 @@ DESIRED = {"sleep": "0", "displaysleep": "0", "disksleep": "0", "autorestart": "
 
 
 def _current() -> dict[str, str]:
+    """AC-power settings from `pmset -g custom`. On laptops the output has a
+    'Battery Power:' section first — only the AC section matters for CI."""
     settings: dict[str, str] = {}
     try:
         text = output(["pmset", "-g", "custom"])
     except util.SetupError:
         return settings
+    in_ac_section = True  # desktops print no section headers at all
     for line in text.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] in DESIRED and parts[0] not in settings:
+        stripped = line.strip()
+        if stripped.endswith("Power:"):
+            in_ac_section = stripped.startswith("AC")
+            continue
+        parts = stripped.split()
+        if in_ac_section and len(parts) >= 2 and parts[0] in DESIRED:
             settings[parts[0]] = parts[1]
     return settings
 
@@ -31,7 +38,12 @@ def ensure(cfg: Config) -> None:
     if not cfg.power_manage:
         return
     current = _current()
-    diffs = {k: v for k, v in DESIRED.items() if current.get(k) != v}
+    # Only converge keys pmset actually reports; retrying a setting the
+    # hardware never echoes back would re-run sudo on every converge.
+    diffs = {k: v for k, v in DESIRED.items() if k in current and current[k] != v}
+    for key in DESIRED:
+        if current and key not in current:
+            warn(f"pmset does not report '{key}' on this machine — leaving it alone")
     if not diffs:
         ok("power settings already configured")
         return

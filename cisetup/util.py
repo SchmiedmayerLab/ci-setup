@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import fcntl
+import os
 import shlex
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 
@@ -48,6 +50,22 @@ def err(msg: str) -> None:
     print(f"{RED}  ✗{OFF} {msg}", file=sys.stderr, flush=True)
 
 
+def _redact(argv: list[str]) -> list[str]:
+    """Blank out secret values (registration tokens, passwords) so they never
+    end up in error messages or the boot-agent log."""
+    redacted = []
+    hide_next = False
+    for arg in argv:
+        if hide_next:
+            redacted.append("<redacted>")
+            hide_next = False
+        else:
+            redacted.append(arg)
+            if arg in ("--token", "--password", "--pat", "-w"):
+                hide_next = True
+    return redacted
+
+
 def run(
     cmd: list,
     *,
@@ -56,6 +74,7 @@ def run(
     cwd=None,
     env: dict | None = None,
     stdin_devnull: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command. With capture=True stdout/stderr are collected; otherwise
     the child inherits our stdio so long-running tools stay visible."""
@@ -65,17 +84,27 @@ def run(
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
     if stdin_devnull or not INTERACTIVE:
-        # Never let a child block on stdin during unattended runs.
-        if stdin_devnull or not sys.stdin.isatty():
-            kwargs["stdin"] = subprocess.DEVNULL
-    proc = subprocess.run(argv, **kwargs)
+        # Unattended runs must never block on a child reading stdin.
+        kwargs["stdin"] = subprocess.DEVNULL
+    if not INTERACTIVE:
+        # Detach the controlling terminal too: tools that prompt on /dev/tty
+        # (sudo, most password prompts) then fail fast instead of hanging.
+        kwargs["start_new_session"] = True
+    shown = shlex.join(_redact(argv))
+    try:
+        proc = subprocess.run(argv, timeout=timeout, **kwargs)
+    except FileNotFoundError as e:
+        raise SetupError(
+            f"command not found: {argv[0]} — is it installed and on PATH? "
+            "(a converge without --skip-brew installs the tooling)"
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise SetupError(f"command timed out after {timeout:.0f}s: {shown}") from e
     if check and proc.returncode != 0:
         detail = ""
         if capture and proc.stderr:
             detail = f" — {proc.stderr.strip()[:400]}"
-        raise SetupError(
-            f"command failed (exit {proc.returncode}): {shlex.join(argv)}{detail}"
-        )
+        raise SetupError(f"command failed (exit {proc.returncode}): {shown}{detail}")
     return proc
 
 
@@ -143,18 +172,28 @@ def fmt_version(version: tuple[int, ...]) -> str:
     return ".".join(str(part) for part in version)
 
 
-_lock_file = None
+STATE_DIR = Path.home() / "Library/Application Support/ci-runner-setup"
+
+_lock_fd: int | None = None
 
 
-def acquire_lock() -> bool:
+def acquire_lock() -> str | None:
     """Take a machine-wide (per-user) lock so a manual run and the boot
-    LaunchAgent never converge concurrently. Returns False if already held."""
-    global _lock_file
-    lock_dir = Path.home() / "Library/Application Support/ci-runner-setup"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    _lock_file = open(lock_dir / "setup.lock", "w")
+    LaunchAgent never mutate state concurrently. Returns None when acquired,
+    otherwise a description of the current holder."""
+    global _lock_fd
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # O_RDWR without truncation: the holder's record must survive our attempt.
+    _lock_fd = os.open(STATE_DIR / "setup.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return False
+        try:
+            holder = os.pread(_lock_fd, 256, 0).decode(errors="replace").strip()
+        except OSError:
+            holder = ""
+        return holder or "unknown holder"
+    os.ftruncate(_lock_fd, 0)
+    started = datetime.now().astimezone().isoformat(timespec="seconds")
+    os.write(_lock_fd, f"pid {os.getpid()}, started {started}".encode())
+    return None
