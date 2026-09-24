@@ -43,7 +43,9 @@ def _read_json(path: Path) -> dict:
     try:
         if path.stat().st_size > 64 * 1024:
             raise SetupError(f"runner adoption metadata is unexpectedly large: {path}")
-        value = json.loads(path.read_text())
+        # The runner's .NET serializer may emit a UTF-8 BOM. Accept it while
+        # keeping our own plain UTF-8 state files equally readable.
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
         raise SetupError(f"cannot read runner adoption metadata {path}: {error}") from error
     if not isinstance(value, dict):

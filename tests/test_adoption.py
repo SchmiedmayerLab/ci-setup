@@ -80,6 +80,17 @@ class AdoptionTests(unittest.TestCase):
     def test_absent_adoption_does_not_change_config(self):
         self.assertIs(adoption.apply(self.cfg), self.cfg)
 
+    def test_utf8_bom_registration_and_state_are_accepted(self):
+        (self.legacy / ".runner").write_bytes(
+            json.dumps(self.registration).encode("utf-8-sig")
+        )
+        candidate = adoption.prepare(self.cfg, self.legacy)
+        self.assertEqual(candidate.runner_name, "existing-vm-1")
+        adoption.save(candidate)
+        state_path = self.state_dir / "adopted-runner.json"
+        state_path.write_bytes(state_path.read_text().encode("utf-8-sig"))
+        self.assertEqual(adoption.apply(self.cfg), candidate)
+
     def test_config_load_applies_adoption_without_dirtying_checkout(self):
         self.cfg.repo_root.mkdir()
         config_file = self.cfg.repo_root / "config.toml"
