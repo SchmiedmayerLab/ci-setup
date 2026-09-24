@@ -9,6 +9,7 @@
 """Unit tests for pure helpers in cisetup.util."""
 
 import pathlib
+import subprocess
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -334,30 +335,50 @@ class WatchdogTests(unittest.TestCase):
             time.sleep(.8)
             self.assertFalse((pathlib.Path(directory) / "survived-timeout").exists())
 
-    def test_heartbeat_reports_elapsed_time_without_exposing_argument_secrets(self):
-        runlog.register_secret("known-heartbeat-secret")
-        script = "import time; time.sleep(.35)"
-        with patch.object(util, "INTERACTIVE", False), patch.object(util, "log") as log:
+    def test_one_notice_at_half_timeout_without_exposing_argument_secrets(self):
+        runlog.register_secret("known-notice-secret")
+        with patch.object(util, "INTERACTIVE", False), patch.object(util, "log") as log, \
+                patch.object(util, "time") as clock, patch.object(util.subprocess, "Popen") as popen:
+            # Poll before halfway, at halfway, and well afterward. Only the
+            # halfway poll should produce a notice, independent of real time.
+            clock.monotonic.side_effect = [100, 100, 149, 149, 150, 150, 180, 180]
+            child = popen.return_value.__enter__.return_value
+            child.returncode = 0
+            child.poll.return_value = None
+            child.communicate.side_effect = [
+                subprocess.TimeoutExpired("synthetic-command", .2),
+                subprocess.TimeoutExpired("synthetic-command", .2),
+                subprocess.TimeoutExpired("synthetic-command", .2),
+                (None, None),
+            ]
             util.run(
-                [sys.executable, "-c", script, "--token", "argument-heartbeat-secret",
-                 "known-heartbeat-secret"],
-                timeout=2, heartbeat_interval=.05,
+                ["synthetic-command", "--token", "argument-notice-secret", "known-notice-secret"],
+                timeout=100,
             )
-        messages = "\n".join(call.args[0] for call in log.call_args_list)
-        self.assertIn("still running after", messages)
-        self.assertIn("timeout 2s", messages)
-        self.assertIn("<redacted>", messages)
-        self.assertNotIn("argument-heartbeat-secret", messages)
-        self.assertNotIn("known-heartbeat-secret", messages)
+        log.assert_called_once()
+        message = log.call_args.args[0]
+        self.assertIn("still running after 50s (timeout 100s)", message)
+        self.assertIn("<redacted>", message)
+        self.assertNotIn("argument-notice-secret", message)
+        self.assertNotIn("known-notice-secret", message)
 
-    def test_captured_commands_never_emit_heartbeats_or_captured_output(self):
-        with patch.object(util, "INTERACTIVE", False), patch.object(util, "log") as log:
-            result = util.run(
-                [sys.executable, "-c", "import time; print('private-capture'); time.sleep(.35)"],
-                capture=True, heartbeat_interval=.01,
-            )
-        log.assert_not_called()
-        self.assertEqual(result.stdout.strip(), "private-capture")
+    def test_no_notice_before_halfway_for_captured_commands_or_without_deadline(self):
+        for capture, timeout, poll_time in [(False, 100, 149), (True, 100, 160), (False, None, 160)]:
+            with self.subTest(capture=capture, timeout=timeout), \
+                    patch.object(util, "INTERACTIVE", False), patch.object(util, "log") as log, \
+                    patch.object(util, "time") as clock, patch.object(util.subprocess, "Popen") as popen:
+                clock.monotonic.side_effect = [100, 100, poll_time, poll_time]
+                child = popen.return_value.__enter__.return_value
+                child.returncode = 0
+                child.poll.return_value = None
+                child.communicate.side_effect = [
+                    subprocess.TimeoutExpired("synthetic-command", .2),
+                    ("private-capture" if capture else None, None),
+                ]
+                result = util.run(["synthetic-command"], capture=capture, timeout=timeout)
+                log.assert_not_called()
+                if capture:
+                    self.assertEqual(result.stdout, "private-capture")
 
     def test_escaped_descendant_cannot_keep_timeout_cleanup_waiting_for_pipe_eof(self):
         import os

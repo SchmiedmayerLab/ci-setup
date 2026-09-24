@@ -180,11 +180,12 @@ reads, with a separate sixty-second socket timeout. During a long transfer it
 logs the bytes received every five minutes. The initial shell bootstrap (installing Homebrew
 and Python on a fresh Mac) is outside these Python limits.
 
-Long-running commands with visible output emit a redacted **still running**
-message every five minutes with elapsed time and their limit. This confirms
-that setup is monitoring the child, not that it is making progress. Captured
-commands, which can return credentials, do not emit these messages. A timeout
-stops the command's process group and becomes a normal recorded failure;
+Commands emit a single redacted **still running** notice only after half their
+timeout has elapsed (two hours for an Xcode install or platform download).
+This confirms that setup is monitoring the child, not that it is making progress.
+Captured commands, which can return credentials, and commands without a deadline
+do not emit these notices. A timeout stops the command's process group and
+becomes a normal recorded failure;
 independent work continues and the maintenance pause attempts service recovery.
 Output silence alone is not treated as a hang: Xcode extraction and builds
 can legitimately be quiet.

@@ -34,7 +34,6 @@ WARNINGS: list[str] = []
 # Callers with legitimately long work supply an explicit limit. Keep these
 # values injectable so watchdog behavior can be tested without waiting minutes.
 DEFAULT_COMMAND_TIMEOUT = 120.0
-DEFAULT_HEARTBEAT_INTERVAL = 300.0
 DEFAULT_SUDO_TIMEOUT = 600.0
 PROCESS_CLEANUP_TIMEOUT = 5.0
 DOWNLOAD_TIMEOUT = 30 * 60.0
@@ -133,19 +132,16 @@ def run(
     env: dict | None = None,
     stdin_devnull: bool = False,
     timeout: float | None | _DefaultTimeout = _DEFAULT_TIMEOUT,
-    heartbeat_interval: float | None = DEFAULT_HEARTBEAT_INTERVAL,
     input: str | None = None,
     start_new_session: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a command with a default deadline, or explicit ``None`` to opt out.
 
-    Captured commands never emit heartbeat/command output. Other long-running
-    commands report elapsed time, which is liveness information, not progress.
+    Uncaptured commands emit one elapsed-time notice halfway to their deadline.
+    Captured commands and commands without a deadline never emit these notices.
     """
     if timeout is _DEFAULT_TIMEOUT:
         timeout = DEFAULT_COMMAND_TIMEOUT
-    if heartbeat_interval is not None and heartbeat_interval <= 0:
-        raise ValueError("heartbeat interval must be positive or None")
     argv = [str(c) for c in cmd]
     # Captured Keychain/API output is deliberately never logged. Known
     # argument secrets are also scrubbed if a child echoes its arguments.
@@ -212,8 +208,8 @@ def run(
                             raise
                 started = time.monotonic()
                 deadline = started + timeout if timeout is not None else None
-                heartbeat = (started + heartbeat_interval
-                             if not capture and heartbeat_interval is not None else None)
+                notice_at = (started + timeout / 2
+                             if not capture and timeout is not None else None)
                 first_communication = True
                 while True:
                     remaining = None if deadline is None else max(0, deadline - time.monotonic())
@@ -238,10 +234,9 @@ def run(
                         now = time.monotonic()
                         if deadline is not None and now >= deadline:
                             raise subprocess.TimeoutExpired(argv, timeout)
-                        if heartbeat is not None and now >= heartbeat:
-                            limit = f"timeout {timeout:g}s" if timeout is not None else "no deadline"
-                            log(f"still running after {now - started:.0f}s ({limit}): {shown}")
-                            heartbeat = now + heartbeat_interval
+                        if notice_at is not None and now >= notice_at:
+                            log(f"still running after {now - started:.0f}s (timeout {timeout:g}s): {shown}")
+                            notice_at = None
                 if child.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
                     raise KeyboardInterrupt
                 if check and child.returncode != 0:
