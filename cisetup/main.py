@@ -197,15 +197,6 @@ def cmd_info(args, repo_root: Path) -> int:
     print(f"  recovery pending: {'yes' if (util.STATE_DIR / 'maintenance.json').exists() else 'no'}")
     print(f"Log retention: up to {cfg.log_retention_days} days, {cfg.log_max_bytes} bytes total")
 
-    print("\nHomebrew managed formulae and dependencies:")
-    packages = values.get("homebrew", {})
-    for name, package in sorted(packages.get("formulae", {}).items()):
-        print(f"  {name}: {package['version']}{' [pinned]' if package['pinned'] else ''}")
-    if "homebrew" not in values:
-        print("  unavailable (see incomplete checks below)")
-    for name, version in sorted(packages.get("casks", {}).items()):
-        print(f"  {name} (cask): {version}")
-
     def xcode_text(value):
         if value is None:
             return "none"
@@ -228,8 +219,16 @@ def cmd_info(args, repo_root: Path) -> int:
         print("\nIncomplete checks:")
         for error in snapshot["errors"]:
             print(f"  {error}")
-        return 1
-    return 0
+
+    print("\nHomebrew managed formulae and dependencies:")
+    packages = values.get("homebrew", {})
+    for name, package in sorted(packages.get("formulae", {}).items()):
+        print(f"  {name}: {package['version']}{' [pinned]' if package['pinned'] else ''}")
+    if "homebrew" not in values:
+        print("  unavailable (see incomplete checks above)")
+    for name, version in sorted(packages.get("casks", {}).items()):
+        print(f"  {name} (cask): {version}")
+    return 1 if snapshot["errors"] else 0
 
 
 def cmd_store_pat(args, repo_root: Path) -> int:
