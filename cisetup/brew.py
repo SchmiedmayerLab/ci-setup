@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,81 +139,86 @@ def probe() -> BrewEnv:
     return BrewEnv(prefix=prefix, openjdk_prefix=openjdk_prefix, gem_bin=gem_bin)
 
 
+class BrewError(SetupError):
+    """A partial package failure with usable paths for independent phases."""
+
+    def __init__(self, message: str, env: BrewEnv):
+        super().__init__(message)
+        self.env = env
+
+
 def ensure(cfg: Config) -> BrewEnv:
     log("Homebrew packages")
-    if not shutil.which("brew"):
-        raise SetupError("Homebrew not found on PATH — run via ./setup")
+    if util.runner_busy():
+        raise SetupError("Homebrew changes deferred: a job is running")
+    brew_env = probe()
+    # Retain the running interpreter's keg until the whole maintenance pass
+    # ends. No tool may auto-refresh the index between individual upgrades.
+    command_env = dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1",
+                       HOMEBREW_NO_INSTALL_CLEANUP="1")
+    errors: list[str] = []
 
-    formulae = FORMULAE + [f for f in cfg.brew_extra_formulae if f not in FORMULAE]
-    casks = CASKS + [c for c in cfg.brew_extra_casks if c not in CASKS]
+    def attempt(cmd: list[str], *, capture: bool = False) -> bool:
+        try:
+            run(cmd, env=command_env, capture=capture)
+            return True
+        except SetupError as e:
+            errors.append(str(e))
+            warn(str(e))
+            return False
 
-    update = run(["brew", "update", "--quiet"], check=False)
-    if update.returncode != 0:
-        warn("`brew update` failed (offline?) — continuing with the local package index")
-
+    attempt(["brew", "update", "--quiet"])
+    formulae = list(dict.fromkeys(FORMULAE + cfg.brew_extra_formulae))
+    casks = list(dict.fromkeys(CASKS + cfg.brew_extra_casks))
     formula_map, cask_map = _resolve_names(formulae, casks)
-
-    installed_formulae = set(output(["brew", "list", "--formula", "-1"]).split())
-    missing_formulae = [f for f in formulae if formula_map[f] not in installed_formulae]
-    if missing_formulae:
-        log(f"Installing formulae: {', '.join(missing_formulae)}")
-        # --yes: since Homebrew 6, install/upgrade ask for confirmation by
-        # default; answer yes so runs (especially unattended ones) never stall.
-        run(["brew", "install", "--yes", "--formula", *missing_formulae])
+    installed = set(output(["brew", "list", "--formula", "-1"], env=command_env).split())
+    missing = [f for f in formulae if formula_map[f] not in installed]
+    outdated = set(output(["brew", "outdated", "--formula", "--quiet"], env=command_env).split())
+    pinned = set(output(["brew", "list", "--pinned"], env=command_env).split())
+    wanted = set(formula_map.values())
+    held = sorted(wanted & outdated & pinned)
+    if held:
+        message = "pinned formulae remain outdated (pins respected): " + ", ".join(held)
+        errors.append(message)
+        warn(message)
+    upgrades = sorted((wanted & outdated) - pinned)
+    python_name = formula_map.get("python3", "python3")
+    for name in missing:
+        log(f"Installing formula: {name}")
+        if attempt(["brew", "install", "--yes", "--formula", name]):
+            brew_env.python_changed |= formula_map[name] == python_name
+    for name in upgrades:
+        log(f"Upgrading formula: {name}")
+        if attempt(["brew", "upgrade", "--yes", "--formula", name]):
+            brew_env.python_changed |= name == python_name
 
     if casks:
-        installed_casks = set(output(["brew", "list", "--cask", "-1"], check=False).split())
-        missing_casks = [c for c in casks if cask_map[c] not in installed_casks]
-        if missing_casks and not util.INTERACTIVE:
-            # Cask installers frequently sudo; keep the unattended run alive
-            # and leave them for the next manual converge.
-            warn(
-                f"skipping cask install in unattended mode (may need sudo): "
-                f"{', '.join(missing_casks)}"
-            )
-        elif missing_casks:
-            log(f"Installing casks: {', '.join(missing_casks)} (may require sudo)")
-            run(["brew", "install", "--yes", "--cask", *missing_casks])
+        installed_casks = set(output(["brew", "list", "--cask", "-1"], env=command_env).split())
+        outdated_casks = set(output(["brew", "outdated", "--cask", "--quiet"], env=command_env).split())
+        for name in casks:
+            action = "install" if cask_map[name] not in installed_casks else "upgrade"
+            if action == "upgrade" and cask_map[name] not in outdated_casks:
+                continue
+            if not util.INTERACTIVE:
+                message = f"cask {action} deferred (may require sudo): {name}"
+                warn(message)
+                errors.append(message)
+            else:
+                attempt(["brew", action, "--yes", "--cask", name])
 
-    wanted_canonical = {formula_map[f] for f in formulae}
-    outdated = set(output(["brew", "outdated", "--formula", "--quiet"], check=False).split())
-    upgrades = sorted(wanted_canonical & outdated)
-    if upgrades and util.runner_busy():
-        # Swapping tool binaries under a running job is as disruptive as a
-        # runner update; the next converge retries.
-        warn(f"brew upgrades deferred (a job is running): {', '.join(upgrades)}")
-        upgrades = []
-    elif upgrades:
-        log(f"Upgrading: {', '.join(upgrades)}")
-        run(["brew", "upgrade", "--yes", "--formula", *upgrades])
-    if casks:
-        outdated_casks = set(
-            output(["brew", "outdated", "--cask", "--quiet"], check=False).split()
-        )
-        cask_upgrades = sorted({cask_map[c] for c in casks} & outdated_casks)
-        if cask_upgrades and (not util.INTERACTIVE or util.runner_busy()):
-            warn(f"cask upgrades deferred (sudo/busy): {', '.join(cask_upgrades)}")
-        elif cask_upgrades:
-            log(f"Upgrading casks: {', '.join(cask_upgrades)}")
-            run(["brew", "upgrade", "--yes", "--cask", *cask_upgrades])
-
-    if not missing_formulae and not upgrades:
-        ok(f"all {len(formulae)} formulae installed and current")
-
-    _remove_autoupdate()
-
-    # git-lfs needs a one-time (idempotent) hook into the user's gitconfig.
-    run(["git", "lfs", "install"], capture=True)
-
-    gem_bin = _ensure_xcpretty()
-
-    python_canonical = formula_map.get("python3", "python3")
-    python_changed = "python3" in missing_formulae or python_canonical in upgrades
-
-    prefix = output(["brew", "--prefix"])
-    return BrewEnv(
-        prefix=prefix,
-        openjdk_prefix=f"{prefix}/opt/openjdk",
-        gem_bin=gem_bin,
-        python_changed=python_changed,
-    )
+    # Each independent operation gets a chance even when another package
+    # failed. Never retry destructive commands blindly.
+    try:
+        _remove_autoupdate()
+    except SetupError as e:
+        errors.append(str(e))
+    attempt(["git", "lfs", "install"], capture=True)
+    try:
+        brew_env.gem_bin = _ensure_xcpretty()
+    except SetupError as e:
+        errors.append(str(e))
+        warn(str(e))
+    if errors:
+        raise BrewError("Homebrew incomplete: " + "; ".join(errors), brew_env)
+    ok(f"all {len(formulae)} managed formulae installed and current")
+    return brew_env

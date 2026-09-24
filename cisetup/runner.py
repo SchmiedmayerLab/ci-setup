@@ -41,6 +41,7 @@ _MACHINE_TO_PLATFORM = {"arm64": "osx-arm64", "x86_64": "osx-x64"}
 # because the runner self-updates.
 _VERSION_MARKER = ".setup-installed-version"
 _STATE_FILE = ".setup-state.json"
+_RESTART_MARKER = ".setup-restart-required"
 
 
 def runner_platform() -> str:
@@ -172,7 +173,10 @@ def ensure_installed(cfg: Config) -> None:
 
 
 def _svc(cfg: Config, *args: str, check: bool = True, capture: bool = False):
-    return run(["./svc.sh", *args], cwd=cfg.runner_dir, check=check, capture=capture)
+    return run(
+        ["./svc.sh", *args], cwd=cfg.runner_dir, check=check,
+        capture=capture, timeout=60,
+    )
 
 
 def service_installed(cfg: Config) -> bool:
@@ -187,19 +191,35 @@ def service_running(cfg: Config) -> bool:
 
 
 def stop_service(cfg: Config) -> None:
-    if service_installed(cfg):
-        _svc(cfg, "stop", check=False, capture=True)
+    if service_running(cfg):
+        _svc(cfg, "stop", capture=True)
+        if service_running(cfg):
+            raise SetupError("runner service is still loaded after svc.sh stop")
 
 
 def uninstall_service(cfg: Config) -> None:
-    if service_installed(cfg):
-        _svc(cfg, "stop", check=False, capture=True)
-        result = _svc(cfg, "uninstall", check=False, capture=True)
-        if result.returncode != 0:
-            warn(f"svc.sh uninstall failed: {(result.stderr or result.stdout).strip()[:200]}")
+    if not service_installed(cfg):
+        return
+    if service_running(cfg):
+        _svc(cfg, "uninstall", capture=True)
+        return
+    # The upstream macOS uninstall command always unloads first, and fails
+    # when maintenance has already unloaded the service. Remove only the
+    # stopped service's own plist; leave registration/credentials intact.
+    marker = cfg.runner_dir / ".service"
+    plist = Path(marker.read_text().strip())
+    launch_agents = Path.home() / "Library/LaunchAgents"
+    if plist.parent != launch_agents or not plist.name.startswith("actions.runner."):
+        raise SetupError(f"unexpected runner service plist in {marker}: {plist}")
+    plist.unlink(missing_ok=True)
+    marker.unlink()
 
 
 def ensure_service(cfg: Config, *, restart: bool = False) -> None:
+    restart_marker = cfg.runner_dir / _RESTART_MARKER
+    if restart:
+        restart_marker.touch()
+    restart = restart or restart_marker.exists()
     if not (cfg.runner_dir / "svc.sh").exists():
         raise SetupError("svc.sh missing — the runner is not installed/configured")
     if not service_installed(cfg):
@@ -209,16 +229,19 @@ def ensure_service(cfg: Config, *, restart: bool = False) -> None:
         log("Installing the runner's launchd service")
         _svc(cfg, "install")
     if restart and service_running(cfg) and util.runner_busy():
-        warn("service restart (changed job environment) deferred: a job is running")
-        restart = False
+        raise SetupError(
+            "service restart deferred: a job is running; the pending restart "
+            "will be retried by the next converge"
+        )
     if restart and service_running(cfg):
         log("Restarting the runner service (job environment changed)")
-        _svc(cfg, "stop", check=False, capture=True)
+        stop_service(cfg)
     if service_running(cfg):
         ok("runner service is running")
     else:
         _svc(cfg, "start")
         ok("runner service started")
+    restart_marker.unlink(missing_ok=True)
 
 
 # --- registration ------------------------------------------------------------
@@ -306,12 +329,10 @@ def deregister(cfg: Config) -> None:
         ["./config.sh", "remove", "--token", token], cwd=cfg.runner_dir, check=False
     )
     if result.returncode != 0:
-        warn(
-            "config.sh remove failed (runner already deleted on GitHub?) — "
-            "removing the local registration files"
+        raise SetupError(
+            "config.sh remove failed; existing local registration and credentials "
+            "were preserved. Check the PAT/runner registration before retrying"
         )
-        for name in (".runner", ".credentials", ".credentials_rsaparams"):
-            (cfg.runner_dir / name).unlink(missing_ok=True)
     (cfg.runner_dir / _STATE_FILE).unlink(missing_ok=True)
 
 
@@ -323,14 +344,13 @@ def ensure_registered(cfg: Config) -> None:
         if not cfg.pat and not util.INTERACTIVE:
             # Never tear down a working registration unattended when the
             # re-registration afterwards could not possibly succeed.
-            warn(
+            raise SetupError(
                 "runner configuration drifted, but no PAT is available for "
-                "unattended re-registration — keeping the current registration"
+                "unattended re-registration — store a PAT with ./setup store-pat; "
+                "the current registration was preserved"
             )
-            return
         if util.runner_busy():
-            warn("re-registration deferred: a job is currently running")
-            return
+            raise SetupError("re-registration deferred: a job is currently running")
         old_state = recorded_state(cfg)
         log("Runner configuration changed — re-registering")
         # Fetch the new registration token BEFORE tearing anything down, so a
@@ -411,6 +431,7 @@ def ensure_job_env(cfg: Config, brew_env: BrewEnv, developer_dir: Path | None) -
 
     path_file = cfg.runner_dir / ".path"
     if not path_file.exists() or path_file.read_text().strip() != desired_path:
+        (cfg.runner_dir / _RESTART_MARKER).touch()
         path_file.write_text(desired_path + "\n")
         changed = True
 
@@ -427,6 +448,7 @@ def ensure_job_env(cfg: Config, brew_env: BrewEnv, developer_dir: Path | None) -
         for key in hook_keys:
             merged.pop(key, None)
     if merged != existing or not env_file.exists():
+        (cfg.runner_dir / _RESTART_MARKER).touch()
         env_file.write_text("".join(f"{k}={v}\n" for k, v in merged.items()))
         changed = True
 

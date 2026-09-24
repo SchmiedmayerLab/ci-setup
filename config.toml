@@ -40,6 +40,10 @@ extra_casks = []            # note: many casks need sudo to install; unattended
 install_agent = true        # re-run this setup at every login/boot (LaunchAgent)
 # label = "com.selfhosted-runner.setup"
 
+[logging]
+retention_days = 30         # prune dated logs older than this on each run
+max_bytes = 52428800        # bound all retained run logs to 50 MiB total
+
 [power]
 manage = true               # pmset never-sleep settings (sudo; interactive runs only)
 

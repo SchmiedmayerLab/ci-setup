@@ -17,6 +17,10 @@
 # Usage:
 #   ./setup                        converge the machine (default)
 #   ./setup status                 show current state
+#   ./setup update                 fast-forward this checkout, then converge
+#   ./setup logs                   show recent maintenance output
+#   ./setup status --json          export a comparable runner inventory
+#   ./setup compare snapshot.json  compare with another runner's inventory
 #   ./setup store-pat [token]      save a GitHub PAT to the Keychain
 #                                      (without a token: prints the PAT
 #                                      requirements and prompts, input hidden)
@@ -32,9 +36,13 @@ set -o pipefail
 SCRIPT_DIR="${0:A:h}"
 
 NONINTERACTIVE=0
+SHOW_HELP=0
 for arg in "$@"; do
   if [[ $arg == --non-interactive ]]; then
     NONINTERACTIVE=1
+  fi
+  if [[ $arg == --help || $arg == -h ]]; then
+    SHOW_HELP=1
   fi
 done
 
@@ -53,7 +61,7 @@ fi
 # CLT/Homebrew/python bootstrapping: a factory-fresh Mac can store its PAT
 # first thing. The service name must match KEYCHAIN_SERVICE in cisetup/config.py.
 
-if [[ ${1:-} == store-pat ]]; then
+if [[ ${1:-} == store-pat ]] && (( ! SHOW_HELP )); then
   readonly KEYCHAIN_SERVICE="github-runner-pat"
   TOKEN="${2:-}"
   if [[ -n $TOKEN ]]; then
@@ -103,6 +111,31 @@ EOF
   exit 0
 fi
 
+# Read-only commands must never bootstrap this machine. Only use an already
+# installed modern interpreter, and let Python report missing tooling.
+READ_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    status|logs|compare|--help|-h) READ_ONLY=1 ;;
+  esac
+done
+if (( READ_ONLY )); then
+  export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if [[ -x $candidate ]] && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+      exec "$candidate" "$SCRIPT_DIR/bin/ci-setup" "$@"
+    fi
+  done
+  fail "Python 3.11+ is needed to inspect setup; no changes were made"
+fi
+
+# launchd's fallback only covers the latest bootstrap attempt. Python captures
+# normal runs into dated, retained logs and does not mirror into this file.
+if [[ -n ${CI_SETUP_BOOT_AGENT:-} ]]; then
+  mkdir -p "$HOME/Library/Logs/ci-runner-setup"
+  : > "$HOME/Library/Logs/ci-runner-setup/bootstrap.log"
+fi
+
 # --- Xcode Command Line Tools (needed for git and by Homebrew) --------------
 
 if ! /usr/bin/xcode-select -p &>/dev/null; then
@@ -112,29 +145,6 @@ if ! /usr/bin/xcode-select -p &>/dev/null; then
   log "Xcode Command Line Tools are missing — requesting installation (GUI dialog)."
   /usr/bin/xcode-select --install || true
   fail "re-run ./setup once the Command Line Tools installation has finished"
-fi
-
-# --- Self-update (unattended runs only) --------------------------------------
-# The boot LaunchAgent should always run the latest committed version of this
-# setup. Manual runs are left alone — the operator controls the checkout.
-# A failed pull (offline, no upstream, dirty tree) must never block converging.
-
-if (( NONINTERACTIVE )) && [[ -z ${CI_SETUP_PULLED:-} ]]; then
-  if /usr/bin/git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
-    typeset before="" after=""
-    before="$(/usr/bin/git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
-    if /usr/bin/git -C "$SCRIPT_DIR" pull --ff-only --quiet; then
-      after="$(/usr/bin/git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
-      if [[ -n $before && -n $after && $before != $after ]]; then
-        log "setup updated ($before -> $after) — re-executing"
-        # Guard against re-exec loops; git replaces files by rename, so the
-        # currently running copy stayed intact until this point.
-        CI_SETUP_PULLED=1 exec "$SCRIPT_DIR/setup" "$@"
-      fi
-    else
-      log "git pull failed (offline? no upstream?) — continuing with the current version"
-    fi
-  fi
 fi
 
 # --- Homebrew ----------------------------------------------------------------
@@ -184,6 +194,8 @@ fi
 if [[ ! -x $PYTHON ]]; then
   fail "expected Homebrew python3 at $PYTHON"
 fi
+
+# Self-update is performed by Python under the shared maintenance lock.
 
 # --- Hand off to the Python implementation ----------------------------------
 

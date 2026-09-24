@@ -21,7 +21,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import runner as runner_service
 from . import util
 from .config import Config
 from .util import SetupError, log, ok, output, run, warn
@@ -74,6 +73,18 @@ class Release:
         else:
             kind, number = 1, self.pre[1]
         return (self.version, kind, number)
+
+
+class XcodeSetupError(SetupError):
+    """An incomplete phase, optionally with a verified replacement toolchain.
+
+    Cleanup can fail after old Xcodes have been removed. In that case the
+    caller must still wire the runner to this ready developer directory.
+    """
+
+    def __init__(self, message: str, developer_dir: Path | None = None):
+        super().__init__(message)
+        self.developer_dir = developer_dir
 
 
 @dataclass(frozen=True)
@@ -212,16 +223,17 @@ def ensure_sudoless_select() -> None:
 
 
 def _unattended_first_launch(developer_dir: Path) -> bool:
-    """First-launch setup without a password, via the sudoers rule: briefly
-    point the global selection at this Xcode (jobs are unaffected — they pin
-    theirs via DEVELOPER_DIR in the runner's .env), run -runFirstLaunch
-    (which only matches the passwordless rule in its bare /usr/bin form),
-    then restore the previous selection. `sudo -n` never prompts; it simply
-    fails when the rule is absent."""
-    probe = run(["sudo", "-n", "/usr/bin/xcode-select", "-p"], check=False, capture=True)
-    if probe.returncode != 0:
+    """Run first launch with passwordless sudo, restoring the prior selection.
+
+    The caller holds the maintenance pause. Never leave a partially prepared
+    Xcode selected, even when xcodebuild itself fails to start.
+    """
+    previous_result = run(
+        ["/usr/bin/xcode-select", "-p"], check=False, capture=True
+    )
+    previous = previous_result.stdout.strip()
+    if previous_result.returncode != 0 or not previous:
         return False
-    previous = run(["/usr/bin/xcode-select", "-p"], check=False, capture=True).stdout.strip()
     select = run(
         ["sudo", "-n", "/usr/bin/xcode-select", "-s", str(developer_dir)],
         check=False,
@@ -229,20 +241,25 @@ def _unattended_first_launch(developer_dir: Path) -> bool:
     )
     if select.returncode != 0:
         return False
-    result = run(["sudo", "-n", "/usr/bin/xcodebuild", "-runFirstLaunch"], check=False)
-    if previous and previous != str(developer_dir):
-        run(["sudo", "-n", "/usr/bin/xcode-select", "-s", previous], check=False, capture=True)
+    try:
+        result = run(["sudo", "-n", "/usr/bin/xcodebuild", "-runFirstLaunch"], check=False)
+    finally:
+        if previous != str(developer_dir):
+            restore = run(
+                ["sudo", "-n", "/usr/bin/xcode-select", "-s", previous],
+                check=False,
+                capture=True,
+            )
+            if restore.returncode != 0:
+                raise SetupError(f"could not restore the previous Xcode selection: {previous}")
     return result.returncode == 0
 
 
 def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
-    """First-launch setup, simulator/SDK platforms and Metal toolchain for one
-    installed Xcode. Everything here is idempotent; xcodebuild itself skips
-    components that are already present and current."""
+    """Prepare one Xcode, reporting failures instead of treating it as ready."""
     developer_dir = app_path / "Contents/Developer"
     if not developer_dir.exists():
-        warn(f"Xcode {release.identifier}: {developer_dir} missing — skipping")
-        return
+        raise SetupError(f"Xcode {release.identifier}: {developer_dir} missing")
 
     status = run(
         ["/usr/bin/xcodebuild", "-checkFirstLaunchStatus"],
@@ -254,21 +271,17 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
         log(f"Xcode {release.identifier}: running first-launch setup")
         result = _xcodebuild(["-runFirstLaunch"], developer_dir, check=False)
         if result.returncode != 0:
-            # Typically means the license/packages need admin rights.
             if util.INTERACTIVE:
                 log(f"Xcode {release.identifier}: retrying first-launch setup with sudo")
-                # Invoke this Xcode's own xcodebuild: sudo's env_reset would
-                # strip a DEVELOPER_DIR passed via the environment, silently
-                # running first-launch against the wrong Xcode.
+                # sudo strips DEVELOPER_DIR; use this Xcode's executable.
                 util.sudo_run(
                     [developer_dir / "usr/bin/xcodebuild", "-runFirstLaunch"]
                 )
             elif not _unattended_first_launch(developer_dir):
-                warn(
-                    f"Xcode {release.identifier}: first-launch setup failed without sudo "
-                    "— run ./setup interactively once"
+                raise SetupError(
+                    f"Xcode {release.identifier}: first-launch setup failed; "
+                    "run ./setup interactively on the runner"
                 )
-                return
         recheck = run(
             ["/usr/bin/xcodebuild", "-checkFirstLaunchStatus"],
             env=dict(os.environ, DEVELOPER_DIR=str(developer_dir)),
@@ -276,191 +289,242 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
             capture=True,
         )
         if recheck.returncode != 0:
-            warn(f"Xcode {release.identifier}: first-launch setup still incomplete")
+            raise SetupError(f"Xcode {release.identifier}: first-launch setup still incomplete")
 
-    platforms = cfg.xcode_platforms
-    if not platforms:
-        pass
-    elif "all" in platforms:
-        log(f"Xcode {release.identifier}: downloading/updating all platforms")
-        result = _xcodebuild(["-downloadAllPlatforms"], developer_dir, check=False)
-        if result.returncode != 0:
-            warn(f"Xcode {release.identifier}: -downloadAllPlatforms failed")
+    # Platforms are independent of one another. Try every requested download
+    # (and Metal), then report all failures together to the phase coordinator.
+    failures = []
+
+    def download_component(args: list[str], description: str) -> None:
+        log(f"Xcode {release.identifier}: downloading/updating {description}")
+        try:
+            _xcodebuild(args, developer_dir)
+        except SetupError as e:
+            failures.append(f"{description}: {e}")
+            warn(f"Xcode {release.identifier}: {description} failed ({e})")
+
+    if "all" in cfg.xcode_platforms:
+        download_component(["-downloadAllPlatforms"], "all platforms")
     else:
-        for platform_name in platforms:
-            log(f"Xcode {release.identifier}: downloading/updating {platform_name} platform")
-            result = _xcodebuild(
-                ["-downloadPlatform", platform_name], developer_dir, check=False
-            )
-            if result.returncode != 0:
-                warn(f"Xcode {release.identifier}: -downloadPlatform {platform_name} failed")
-
-    # Xcode 26+ ships the Metal toolchain as a separate download.
+        for platform_name in cfg.xcode_platforms:
+            download_component(["-downloadPlatform", platform_name], f"{platform_name} platform")
     if release.version[0] >= 26:
-        log(f"Xcode {release.identifier}: downloading/updating Metal toolchain")
-        result = _xcodebuild(
-            ["-downloadComponent", "MetalToolchain"], developer_dir, check=False
-        )
-        if result.returncode != 0:
-            warn(f"Xcode {release.identifier}: Metal toolchain download failed")
+        download_component(["-downloadComponent", "MetalToolchain"], "Metal toolchain")
+    if failures:
+        raise SetupError(f"Xcode {release.identifier} incomplete: " + "; ".join(failures))
 
+
+
+def runner_developer_dir(cfg: Config) -> Path | None:
+    """Read only the runner's DEVELOPER_DIR override, never evaluate its .env.
+
+    Preserve the last occurrence, matching how the runner environment is
+    merged. Other keys may contain secrets and must never enter diagnostics.
+    """
+    value = ""
+    try:
+        with (cfg.runner_dir / ".env").open() as stream:
+            for line in stream:
+                key, separator, candidate = line.strip().partition("=")
+                if separator and key == "DEVELOPER_DIR":
+                    value = candidate
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as error:
+        raise SetupError("cannot inspect the runner's DEVELOPER_DIR override") from error
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise SetupError("runner DEVELOPER_DIR must be absolute")
+    return path.resolve()
 
 def ensure(cfg: Config) -> Path | None:
-    """Converge the set of installed Xcodes. Returns the developer dir of the
-    latest stable Xcode (for the runner's DEVELOPER_DIR), or None."""
+    """Return a ready latest stable developer directory, or report failure.
+
+    Failed discovery, installs or readiness checks preserve all installed
+    Xcodes, runtimes and the current selection. The caller owns the runner
+    maintenance pause for this entire phase.
+    """
     if not cfg.xcode_manage:
         return None
     log("Xcode releases")
-
+    if util.runner_busy():
+        raise SetupError("Xcode maintenance deferred: a runner job is currently running")
     if shutil.which("xcodes") is None:
-        warn("`xcodes` is not installed yet — skipping the Xcode phase "
-             "(converge without --skip-brew installs it)")
-        return None
+        raise SetupError(
+            "`xcodes` is not installed; converge without --skip-brew to install it"
+        )
 
-    # Refresh the release list; fall back to the cached one when offline.
+    failures = []
     refresh = run(["xcodes", "update"], check=False, capture=True)
     if refresh.returncode != 0:
-        warn("`xcodes update` failed (offline?) — using the cached release list")
+        message = "`xcodes update` failed; cached releases cannot confirm the latest Xcode"
+        failures.append(message)
+        warn(message)
 
     releases = parse_list(output(["xcodes", "list"]))
     desired, latest = select_desired(releases, cfg.xcode_install_beta)
     installed = parse_installed(output(["xcodes", "installed"]))
-    installed_ids = {i.identifier for i in installed}
-
+    installed_builds = {(i.identifier, i.build) for i in installed}
     for release in desired:
-        if release.identifier in installed_ids:
+        if (release.identifier, release.build) in installed_builds:
             ok(f"Xcode {release.identifier} already installed")
             continue
-        # --experimental-unxip: much faster unarchiving; --empty-trash:
-        # reclaim the tens of GB the trashed .xip would otherwise occupy.
         install_cmd = [
             "xcodes", "install", "--experimental-unxip", "--empty-trash",
             release.identifier,
         ]
-        if util.INTERACTIVE:
-            log(
-                f"Installing Xcode {release.identifier} "
-                "(first time: xcodes will prompt for your Apple ID)"
+        log(f"Installing Xcode {release.identifier}")
+        try:
+            run(install_cmd, stdin_devnull=not util.INTERACTIVE)
+        except SetupError as e:
+            message = (
+                f"Xcode {release.identifier} install failed: {e}; "
+                "if Apple ID authentication expired, rerun ./setup "
+                "interactively on the CI runner to authenticate and retry"
             )
-            run(install_cmd)
-        else:
-            # A stored xcodes session may allow this unattended; if it needs
-            # interactive Apple ID auth it fails fast thanks to /dev/null stdin.
-            result = run(install_cmd, check=False, stdin_devnull=True)
-            if result.returncode != 0:
-                warn(
-                    f"could not install Xcode {release.identifier} unattended "
-                    "(Apple ID session expired?) — run ./setup interactively"
-                )
+            failures.append(message)
+            warn(message)
 
     installed = parse_installed(output(["xcodes", "installed"]))
     installed_by_id = {i.identifier: i for i in installed}
-
     for release in desired:
         info = installed_by_id.get(release.identifier)
-        if info:
+        if info is None or info.build != release.build:
+            failures.append(f"Xcode {release.identifier} ({release.build}) is not installed")
+            continue
+        try:
             _post_install(cfg, release, Path(info.path))
+        except SetupError as e:
+            failures.append(str(e))
+            warn(str(e))
 
+    if failures:
+        raise XcodeSetupError(
+            "Xcode maintenance incomplete; skipping Xcode/runtime cleanup and "
+            "final selection: " + "; ".join(failures)
+        )
+    # Defense in depth for callers that did not establish the maintenance pause.
     if util.runner_busy():
-        warn("Xcode/runtime cleanup deferred: a job is currently running")
-    else:
-        # Deleting Xcodes/runtimes takes minutes; pause the runner service so
-        # no job can be scheduled onto the machine mid-deletion. The listener
-        # comes back up in ensure_service at the end of the converge.
-        if runner_service.service_running(cfg):
-            log("Pausing the runner service during Xcode/runtime cleanup")
-            runner_service.stop_service(cfg)
-        _remove_unwanted_xcodes(installed, desired)
-        kept_dirs = [
-            Path(installed_by_id[r.identifier].path) / "Contents/Developer"
-            for r in desired
-            if r.identifier in installed_by_id
-        ]
-        _cleanup_runtimes(kept_dirs)
+        raise XcodeSetupError("Xcode selection/cleanup deferred: a runner job is currently running")
 
-    latest_info = installed_by_id.get(latest.identifier)
-    if latest_info:
-        developer_dir = Path(latest_info.path) / "Contents/Developer"
-        _ensure_global_selection(developer_dir)
-        return developer_dir
-    warn(f"latest stable Xcode {latest.identifier} is not installed yet")
-    return None
+    developer_dir = Path(installed_by_id[latest.identifier].path) / "Contents/Developer"
+    previous_runner_dir = runner_developer_dir(cfg)
+    _ensure_global_selection(developer_dir)
+    try:
+        kept = _remove_unwanted_xcodes(
+            installed, desired,
+            protected_developer_dirs={previous_runner_dir} if previous_runner_dir else set(),
+        )
+        # Unrecognized/newer installed Xcodes are retained too. Their SDKs must
+        # participate in runtime matching rather than losing their runtimes.
+        _cleanup_runtimes([Path(info.path) / "Contents/Developer" for info in kept])
+    except SetupError as e:
+        raise XcodeSetupError(
+            f"Xcode cleanup incomplete: {e}", developer_dir=developer_dir
+        ) from e
+    return developer_dir
 
 
 def _remove_unwanted_xcodes(
-    installed: list[InstalledXcode], desired: list[Release]
-) -> None:
-    """Delete installed Xcodes outside the desired set (latest stable,
-    previous minor, newest beta). Never touches a version newer than
-    everything in the desired set — if the release-list parser ever misses
-    the newest Xcode, this must fail safe rather than delete it."""
+    installed: list[InstalledXcode], desired: list[Release],
+    *, protected_developer_dirs: set[Path] | None = None,
+) -> list[InstalledXcode]:
+    """Retain the runner's current Xcode until a later pass sees its new .env.
+
+    Environment writes or process interruption can fail after this phase.
+    Keeping the prior toolchain (and its runtimes) lets the restored service
+    continue working; the next convergence can remove it after the switch.
+    """
+    protected = protected_developer_dirs or set()
     desired_ids = {r.identifier for r in desired}
     max_desired = max(r.version for r in desired)
+    kept = []
+    failures = []
     for entry in installed:
         if entry.identifier in desired_ids:
+            kept.append(entry)
+            continue
+        if (Path(entry.path) / "Contents/Developer").resolve() in protected:
+            ok(f"keeping Xcode {entry.identifier}: still used by the runner environment")
+            kept.append(entry)
             continue
         parsed = parse_identifier(entry.identifier)
         if parsed is None or parsed[0] > max_desired:
             warn(f"keeping unrecognized/newer Xcode {entry.identifier} ({entry.path})")
+            kept.append(entry)
             continue
         log(f"Removing unwanted Xcode {entry.identifier} ({entry.path})")
-        result = run(["xcodes", "uninstall", entry.identifier], check=False)
-        if result.returncode != 0:
-            warn(f"could not uninstall Xcode {entry.identifier}")
+        try:
+            run(["xcodes", "uninstall", entry.identifier])
+        except SetupError as e:
+            failures.append(f"could not uninstall Xcode {entry.identifier}: {e}")
+    if failures:
+        # Skip runtime cleanup: failed removals may still need their runtimes.
+        raise SetupError("; ".join(failures))
+    return kept
 
 
 def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
-    """Delete simulator runtimes no kept Xcode needs: superseded builds of
-    the same runtime (a stable release replacing its beta), unusable images,
-    and builds that none of the kept Xcodes' SDKs match. Conservative: any
-    parse/tool failure deletes nothing further."""
+    """Delete only runtimes proven unused by every retained Xcode.
+
+    Validate all discovery output before the first deletion. Broad simctl
+    --outdated/--unusable deletion could discard another kept Xcode's runtime.
+    """
     if not developer_dirs:
         return
     env = dict(os.environ, DEVELOPER_DIR=str(developer_dirs[0]))
-    run(["xcrun", "simctl", "runtime", "delete", "--outdated"], env=env, check=False, capture=True)
-    run(["xcrun", "simctl", "runtime", "delete", "--unusable"], env=env, check=False, capture=True)
-
     wanted_builds: set[str] = set()
     for dev in developer_dirs:
         match = run(
             ["xcrun", "simctl", "runtime", "match", "list", "-j"],
             env=dict(os.environ, DEVELOPER_DIR=str(dev)),
-            check=False,
             capture=True,
         )
-        if match.returncode != 0:
-            return
         try:
-            entries = json.loads(match.stdout or "{}")
-        except json.JSONDecodeError:
-            return
-        for entry in entries.values():
-            build = entry.get("chosenRuntimeBuild") or entry.get("defaultBuild")
-            if build:
+            entries = json.loads(match.stdout)
+            if not isinstance(entries, dict):
+                raise ValueError("invalid runtime match list")
+            if not entries:
+                # A valid empty result is possible when no simulator platforms
+                # were installed (for example, platforms=[]). There is no safe
+                # deletion plan, but that is not an installation failure.
+                warn(f"runtime cleanup skipped: no SDK runtime matches for {dev}")
+                return
+            for entry in entries.values():
+                if not isinstance(entry, dict):
+                    raise ValueError("invalid runtime match entry")
+                build = entry.get("chosenRuntimeBuild") or entry.get("defaultBuild")
+                if not isinstance(build, str) or not build:
+                    raise ValueError("runtime match has no build")
                 wanted_builds.add(build)
-    if not wanted_builds:
-        return
+        except (ValueError, TypeError) as e:
+            raise SetupError(f"cannot safely match runtimes for {dev}: {e}") from e
 
-    listing = run(
-        ["xcrun", "simctl", "runtime", "list", "-j"], env=env, check=False, capture=True
-    )
-    if listing.returncode != 0:
-        return
+    listing = run(["xcrun", "simctl", "runtime", "list", "-j"], env=env, capture=True)
     try:
-        runtimes = json.loads(listing.stdout or "{}")
-    except json.JSONDecodeError:
-        return
+        runtimes = json.loads(listing.stdout)
+        if not isinstance(runtimes, dict) or any(
+            not isinstance(runtime, dict) for runtime in runtimes.values()
+        ):
+            raise ValueError("invalid runtime list")
+    except (ValueError, TypeError) as e:
+        raise SetupError(f"cannot safely list simulator runtimes: {e}") from e
+
+    failures = []
     for uuid, runtime in runtimes.items():
         build = runtime.get("build")
         if not build or build in wanted_builds or runtime.get("deletable") is False:
             continue
         name = f"{runtime.get('runtimeIdentifier', uuid)} ({build})"
         log(f"Removing simulator runtime no kept Xcode uses: {name}")
-        result = run(
-            ["xcrun", "simctl", "runtime", "delete", uuid], env=env, check=False, capture=True
-        )
-        if result.returncode != 0:
-            warn(f"could not delete runtime {name}")
+        try:
+            run(["xcrun", "simctl", "runtime", "delete", uuid], env=env, capture=True)
+        except SetupError as e:
+            failures.append(f"could not delete runtime {name}: {e}")
+    if failures:
+        raise SetupError("; ".join(failures))
 
 
 def _ensure_global_selection(developer_dir: Path) -> None:
@@ -480,7 +544,7 @@ def _ensure_global_selection(developer_dir: Path) -> None:
     if result.returncode == 0:
         ok(f"globally selected {developer_dir}")
     else:
-        warn(
+        raise SetupError(
             "could not update the global xcode-select (sudoers rule missing? "
             "run ./setup interactively once)"
         )

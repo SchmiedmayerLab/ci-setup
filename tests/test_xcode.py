@@ -6,17 +6,23 @@
 # SPDX-License-Identifier: MIT
 #
 
-"""Unit tests for the pure Xcode release-selection logic.
+"""Hermetic tests for Xcode selection and failure handling (all commands mocked).
 
 Run with:  python3 -m unittest discover -s tests
 """
 
 import pathlib
+import subprocess
+import tempfile
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+from cisetup import xcode  # noqa: E402
+from cisetup.config import Config  # noqa: E402
+from cisetup.util import SetupError  # noqa: E402
 from cisetup.xcode import (  # noqa: E402
     Release,
     parse_identifier,
@@ -188,6 +194,307 @@ class SortKeyTests(unittest.TestCase):
         self.assertLess(beta.sort_key(), rc.sort_key())
         self.assertLess(rc.sort_key(), stable.sort_key())
 
+
+
+class XcodeMaintenanceTests(unittest.TestCase):
+    """No test may invoke xcodes, xcodebuild, sudo or a real runner."""
+
+    def setUp(self):
+        self.cfg = Config(repo_root=pathlib.Path("/fake/repo"))
+        self.cfg.xcode_install_beta = False
+        self.run = self._patch("run", return_value=subprocess.CompletedProcess([], 0, "", ""))
+        self.output = self._patch("output")
+        self._patch("shutil.which", return_value="/fake/xcodes")
+        self._patch("util.runner_busy", return_value=False)
+        self._patch("util.sudo_run", side_effect=AssertionError("unexpected sudo"))
+        self._patch("util.INTERACTIVE", new=False)
+        self.post_install = self._patch("_post_install")
+        self.runner_developer_dir = self._patch("runner_developer_dir", return_value=None)
+        self.select = self._patch("_ensure_global_selection")
+        self.remove = self._patch("_remove_unwanted_xcodes", return_value=[])
+        self.runtimes = self._patch("_cleanup_runtimes")
+        self.listing = "16.3 (16E140)\n16.4 (16F6)\n"
+        self.installed = (
+            "16.3 (16E140) /fake/Xcode-16.3.app\n"
+            "16.4 (16F6) /fake/Xcode-16.4.app\n"
+        )
+        self.output.side_effect = lambda cmd: (
+            self.listing if cmd == ["xcodes", "list"] else self.installed
+        )
+
+    def _patch(self, name, **kwargs):
+        patcher = mock.patch("cisetup.xcode." + name, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def assert_preserved(self):
+        self.select.assert_not_called()
+        self.remove.assert_not_called()
+        self.runtimes.assert_not_called()
+
+    def test_failed_install_preserves_working_xcodes_and_runtimes(self):
+        self.installed = "16.3 (16E140) /fake/Xcode-16.3.app\n"
+        def command(cmd, **kwargs):
+            if cmd[:2] == ["xcodes", "install"]:
+                raise SetupError("Apple ID authentication required")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        self.run.side_effect = command
+        with self.assertRaisesRegex(xcode.XcodeSetupError, "Apple ID authentication") as ctx:
+            xcode.ensure(self.cfg)
+        self.assertIsNone(ctx.exception.developer_dir)
+        self.assert_preserved()
+        self.assertEqual(self.post_install.call_args.args[1].identifier, "16.3")
+
+    def test_independent_installs_continue_and_errors_are_aggregated(self):
+        self.cfg.xcode_install_beta = True
+        self.listing += "26.0 Beta 5 (17A5295f)\n"
+        self.installed = "16.3 (16E140) /fake/Xcode-16.3.app\n"
+        def command(cmd, **kwargs):
+            if cmd[:2] == ["xcodes", "install"]:
+                raise SetupError("failed " + cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        self.run.side_effect = command
+        with self.assertRaises(xcode.XcodeSetupError) as ctx:
+            xcode.ensure(self.cfg)
+        self.assertIn("failed 16.4", str(ctx.exception))
+        self.assertIn("failed 26.0 Beta 5", str(ctx.exception))
+        self.assertEqual(
+            [call.args[0][-1] for call in self.run.call_args_list if call.args[0][1] == "install"],
+            ["16.4", "26.0 Beta 5"],
+        )
+        self.assert_preserved()
+
+    def test_readiness_failure_keeps_selection_and_prepares_other_xcodes(self):
+        self.post_install.side_effect = [SetupError("first-launch incomplete"), None]
+        with self.assertRaisesRegex(xcode.XcodeSetupError, "first-launch incomplete"):
+            xcode.ensure(self.cfg)
+        self.assertEqual(self.post_install.call_count, 2)
+        self.assert_preserved()
+
+    def test_cached_releases_do_not_justify_cleanup_or_success(self):
+        self.run.return_value = subprocess.CompletedProcess([], 1, "", "offline")
+        with self.assertRaisesRegex(xcode.XcodeSetupError, "cached releases"):
+            xcode.ensure(self.cfg)
+        self.assertEqual(self.post_install.call_count, 2)
+        self.assert_preserved()
+
+    def test_wrong_installed_build_is_not_considered_ready(self):
+        self.installed = self.installed.replace("16F6", "16F5")
+        with self.assertRaisesRegex(xcode.XcodeSetupError, r"16.4 \(16F6\) is not installed"):
+            xcode.ensure(self.cfg)
+        self.assert_preserved()
+
+    def test_busy_runner_blocks_all_xcode_operations(self):
+        with mock.patch("cisetup.xcode.util.runner_busy", return_value=True):
+            with self.assertRaisesRegex(SetupError, "job is currently running"):
+                xcode.ensure(self.cfg)
+        self.run.assert_not_called()
+        self.output.assert_not_called()
+        self.assert_preserved()
+
+    def test_missing_xcodes_is_a_phase_failure(self):
+        with mock.patch("cisetup.xcode.shutil.which", return_value=None):
+            with self.assertRaisesRegex(SetupError, "not installed"):
+                xcode.ensure(self.cfg)
+        self.assert_preserved()
+
+    def test_selection_failure_prevents_cleanup(self):
+        self.select.side_effect = SetupError("selection failed")
+        with self.assertRaisesRegex(SetupError, "selection failed"):
+            xcode.ensure(self.cfg)
+        self.remove.assert_not_called()
+        self.runtimes.assert_not_called()
+
+    def test_cleanup_error_carries_ready_replacement_for_runner_environment(self):
+        self.remove.side_effect = SetupError("old Xcode removal failed")
+        with self.assertRaises(xcode.XcodeSetupError) as ctx:
+            xcode.ensure(self.cfg)
+        ready = pathlib.Path("/fake/Xcode-16.4.app/Contents/Developer")
+        self.assertEqual(ctx.exception.developer_dir, ready)
+        self.select.assert_called_once_with(ready)
+        self.runtimes.assert_not_called()
+
+    def test_success_selects_ready_latest_and_preserves_retained_runtime_needs(self):
+        kept = [xcode.InstalledXcode("99.0", "99A1", "/fake/Future.app")]
+        self.remove.return_value = kept
+        ready = xcode.ensure(self.cfg)
+        self.assertEqual(ready, pathlib.Path("/fake/Xcode-16.4.app/Contents/Developer"))
+        self.select.assert_called_once_with(ready)
+        self.runtimes.assert_called_once_with([pathlib.Path("/fake/Future.app/Contents/Developer")])
+
+    def test_current_runner_toolchain_is_protected_and_kept_for_runtime_matching(self):
+        old = xcode.InstalledXcode("16.2", "16C50", "/fake/Previous.app")
+        current = pathlib.Path(old.path) / "Contents/Developer"
+        self.runner_developer_dir.return_value = current
+        self.remove.return_value = [old]
+        xcode.ensure(self.cfg)
+        self.assertEqual(self.remove.call_args.kwargs["protected_developer_dirs"], {current})
+        self.runtimes.assert_called_once_with([current])
+
+
+class XcodeReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = Config(repo_root=pathlib.Path("/fake/repo"))
+        self.release = Release((26, 0), (), "26.0", "17A324")
+        self.app = pathlib.Path("/fake/Xcode.app")
+        self.run = self._patch("run", return_value=subprocess.CompletedProcess([], 0, "", ""))
+        self._patch("util.sudo_run", side_effect=AssertionError("unexpected sudo"))
+        self._patch("util.INTERACTIVE", new=False)
+        self._patch("Path.exists", return_value=True)
+
+    def _patch(self, name, **kwargs):
+        patcher = mock.patch("cisetup.xcode." + name, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
+
+    def test_failed_platforms_and_metal_are_all_attempted_and_reported(self):
+        self.cfg.xcode_platforms = ["iOS", "watchOS"]
+        def command(cmd, **kwargs):
+            if cmd[1].startswith("-download"):
+                raise SetupError("download unavailable: " + " ".join(cmd[1:]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        self.run.side_effect = command
+        with self.assertRaises(SetupError) as ctx:
+            xcode._post_install(self.cfg, self.release, self.app)
+        for component in ("iOS platform", "watchOS platform", "Metal toolchain"):
+            self.assertIn(component, str(ctx.exception))
+        self.assertEqual(len([c for c in self.run.call_args_list if c.args[0][1].startswith("-download")]), 3)
+
+    def test_first_launch_recheck_must_succeed_before_downloads(self):
+        self.run.side_effect = [
+            subprocess.CompletedProcess([], 1, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 1, "", ""),
+        ]
+        with self.assertRaisesRegex(SetupError, "still incomplete"):
+            xcode._post_install(self.cfg, self.release, self.app)
+        self.assertFalse(any(c.args[0][1].startswith("-download") for c in self.run.call_args_list))
+
+    def test_unattended_first_launch_failure_is_not_ready(self):
+        self.run.return_value = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch("cisetup.xcode._unattended_first_launch", return_value=False):
+            with self.assertRaisesRegex(SetupError, "first-launch setup failed"):
+                xcode._post_install(self.cfg, self.release, self.app)
+
+    def test_temporary_selection_is_restored_even_when_command_raises(self):
+        self.run.side_effect = [
+            subprocess.CompletedProcess([], 0, "/fake/Previous/Developer\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            SetupError("could not start xcodebuild"),
+            subprocess.CompletedProcess([], 0, "", ""),
+        ]
+        with self.assertRaisesRegex(SetupError, "could not start xcodebuild"):
+            xcode._unattended_first_launch(self.app / "Contents/Developer")
+        self.assertEqual(self.run.call_args.args[0][-1], "/fake/Previous/Developer")
+
+
+class RuntimeCleanupTests(unittest.TestCase):
+    def test_invalid_discovery_never_deletes_any_runtime(self):
+        for discovery in ("invalid", '{"iOS": {}}', "[]"):
+            with self.subTest(discovery=discovery), mock.patch(
+                "cisetup.xcode.run",
+                return_value=subprocess.CompletedProcess([], 0, discovery, ""),
+            ) as run:
+                with self.assertRaises(SetupError):
+                    xcode._cleanup_runtimes([pathlib.Path("/fake/Developer")])
+                self.assertFalse(any("delete" in c.args[0] for c in run.call_args_list))
+
+    def test_empty_match_for_any_kept_xcode_skips_all_runtime_cleanup(self):
+        with mock.patch("cisetup.xcode.run") as run, mock.patch("cisetup.xcode.warn") as warn:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
+                subprocess.CompletedProcess([], 0, '{}', ""),
+            ]
+            xcode._cleanup_runtimes([pathlib.Path("/fake/One"), pathlib.Path("/fake/NoPlatforms")])
+            self.assertEqual(run.call_count, 2)
+            self.assertFalse(any("delete" in c.args[0] for c in run.call_args_list))
+            warn.assert_called_once()
+            self.assertIn("no SDK runtime matches", warn.call_args.args[0])
+
+    def test_discovery_failure_for_second_xcode_prevents_all_deletion(self):
+        with mock.patch("cisetup.xcode.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
+                SetupError("cannot query other Xcode"),
+            ]
+            with self.assertRaises(SetupError):
+                xcode._cleanup_runtimes([pathlib.Path("/fake/One"), pathlib.Path("/fake/Two")])
+            self.assertFalse(any("delete" in c.args[0] for c in run.call_args_list))
+
+    def test_invalid_runtime_listing_never_deletes(self):
+        with mock.patch("cisetup.xcode.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
+                subprocess.CompletedProcess([], 0, '{"runtime":null}', ""),
+            ]
+            with self.assertRaisesRegex(SetupError, "cannot safely list"):
+                xcode._cleanup_runtimes([pathlib.Path("/fake/One")])
+            self.assertFalse(any("delete" in c.args[0] for c in run.call_args_list))
+
+    def test_runtime_deletion_uses_all_kept_xcode_builds(self):
+        with mock.patch("cisetup.xcode.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
+                subprocess.CompletedProcess([], 0, '{"iOS":{"defaultBuild":"B"}}', ""),
+                subprocess.CompletedProcess([], 0, '{"one":{"build":"A"},"two":{"build":"B"},"old":{"build":"C"},"system":{"build":"D","deletable":false}}', ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+            ]
+            xcode._cleanup_runtimes([pathlib.Path("/fake/One"), pathlib.Path("/fake/Two")])
+            deletions = [c.args[0] for c in run.call_args_list if "delete" in c.args[0]]
+            self.assertEqual(deletions, [["xcrun", "simctl", "runtime", "delete", "old"]])
+
+
+class XcodeRemovalTests(unittest.TestCase):
+    def test_removal_failures_are_aggregated_and_newer_or_unknown_are_kept(self):
+        desired = [Release((26, 0), (), "26.0", "17A324")]
+        installed = [
+            xcode.InstalledXcode("16.2", "old1", "/fake/Old1.app"),
+            xcode.InstalledXcode("16.3", "old2", "/fake/Old2.app"),
+            xcode.InstalledXcode("26.0", "17A324", "/fake/Desired.app"),
+            xcode.InstalledXcode("99.0", "newer", "/fake/Newer.app"),
+            xcode.InstalledXcode("unknown", "custom", "/fake/Custom.app"),
+        ]
+        with mock.patch("cisetup.xcode.run", side_effect=SetupError("uninstall failed")) as run:
+            with self.assertRaises(SetupError) as ctx:
+                xcode._remove_unwanted_xcodes(installed, desired)
+            self.assertIn("16.2", str(ctx.exception))
+            self.assertIn("16.3", str(ctx.exception))
+            self.assertEqual([c.args[0][-1] for c in run.call_args_list], ["16.2", "16.3"])
+
+    def test_runner_toolchain_survives_until_environment_switch_completed(self):
+        current = pathlib.Path("/fake/Previous.app/Contents/Developer")
+        replacement = pathlib.Path("/fake/Ready.app/Contents/Developer")
+        old = xcode.InstalledXcode("16.2", "16C50", str(current.parent.parent))
+        ready = xcode.InstalledXcode("26.0", "17A324", str(replacement.parent.parent))
+        desired = [Release((26, 0), (), "26.0", "17A324")]
+        with mock.patch("cisetup.xcode.run") as run:
+            retained = xcode._remove_unwanted_xcodes(
+                [old, ready], desired, protected_developer_dirs={current}
+            )
+            self.assertEqual(retained, [old, ready])
+            run.assert_not_called()
+            # If writing .env fails or setup is interrupted, repeated cleanup
+            # still retains old. Only the next pass after a switch removes it.
+            xcode._remove_unwanted_xcodes([old, ready], desired, protected_developer_dirs={current})
+            run.assert_not_called()
+            retained = xcode._remove_unwanted_xcodes(
+                [old, ready], desired, protected_developer_dirs={replacement}
+            )
+            self.assertEqual(retained, [ready])
+            run.assert_called_once_with(["xcodes", "uninstall", "16.2"])
+
+
+class RunnerDeveloperDirectoryTests(unittest.TestCase):
+    def test_reads_only_last_override_without_evaluating_other_environment_keys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            cfg = Config(repo_root=root, runner_dir=root)
+            self.assertIsNone(xcode.runner_developer_dir(cfg))
+            (root / ".env").write_text(
+                f"SECRET=do-not-read-or-execute-this\nDEVELOPER_DIR={root}/Old\n"
+                f"DEVELOPER_DIR={root}/Current\nOTHER=$(false)\n"
+            )
+            self.assertEqual(xcode.runner_developer_dir(cfg), (root / "Current").resolve())
 
 if __name__ == "__main__":
     unittest.main()
