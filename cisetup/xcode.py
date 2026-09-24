@@ -471,6 +471,29 @@ def _remove_unwanted_xcodes(
     return kept
 
 
+_RUNTIME_PLATFORMS = {
+    "com.apple.platform.iphoneos": "iOS",
+    "com.apple.platform.iphonesimulator": "iOS",
+    "com.apple.platform.appletvos": "tvOS",
+    "com.apple.platform.appletvsimulator": "tvOS",
+    "com.apple.platform.watchos": "watchOS",
+    "com.apple.platform.watchsimulator": "watchOS",
+    "com.apple.platform.xros": "visionOS",
+    "com.apple.platform.xrsimulator": "visionOS",
+}
+
+
+def _runtime_train(platform, version) -> tuple[str, int, int] | None:
+    """Match device SDKs to simulator runtimes without equating their builds."""
+    if not isinstance(platform, str) or not isinstance(version, str):
+        return None
+    family = _RUNTIME_PLATFORMS.get(platform)
+    if family is None or not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", version):
+        return None
+    major, minor = (int(part) for part in version.split(".")[:2])
+    return family, major, minor
+
+
 def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
     """Delete only runtimes proven unused by every retained Xcode.
 
@@ -481,6 +504,7 @@ def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
         return
     env = dict(os.environ, DEVELOPER_DIR=str(developer_dirs[0]))
     wanted_builds: set[str] = set()
+    wanted_trains: set[tuple[str, int, int]] = set()
     for dev in developer_dirs:
         match = run(
             ["xcrun", "simctl", "runtime", "match", "list", "-j"],
@@ -500,10 +524,21 @@ def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
             for entry in entries.values():
                 if not isinstance(entry, dict):
                     raise ValueError("invalid runtime match entry")
-                build = entry.get("chosenRuntimeBuild") or entry.get("defaultBuild")
-                if not isinstance(build, str) or not build:
+                builds = []
+                for field in ("chosenRuntimeBuild", "defaultBuild"):
+                    build = entry.get(field)
+                    if build is None or build == "":
+                        continue
+                    if not isinstance(build, str):
+                        raise ValueError("runtime match has an invalid build")
+                    builds.append(build)
+                if not builds:
                     raise ValueError("runtime match has no build")
-                wanted_builds.add(build)
+                train = _runtime_train(entry.get("platform"), entry.get("sdkVersion"))
+                if train is None:
+                    raise ValueError("runtime match has an unknown platform or SDK version")
+                wanted_builds.update(builds)
+                wanted_trains.add(train)
         except (ValueError, TypeError) as e:
             raise SetupError(f"cannot safely match runtimes for {dev}: {e}") from e
 
@@ -520,7 +555,14 @@ def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
     failures = []
     for uuid, runtime in runtimes.items():
         build = runtime.get("build")
-        if not build or build in wanted_builds or runtime.get("deletable") is False:
+        if not isinstance(build, str) or not build or runtime.get("deletable") is not True:
+            continue
+        train = _runtime_train(runtime.get("platformIdentifier"), runtime.get("version"))
+        # Apple's downloadable runtime may have a different build and patch
+        # version from the SDK's match (e.g. iOS 26.5/23F77 for SDK 26.5.1/23F81a).
+        # Preserve every runtime in a kept SDK's platform/minor train, plus
+        # explicit matches. Unknown metadata cannot prove a runtime is unused.
+        if train is None or train in wanted_trains or build in wanted_builds:
             continue
         name = f"{runtime.get('runtimeIdentifier', uuid)} ({build})"
         log(f"Removing simulator runtime no kept Xcode uses: {name}")

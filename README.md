@@ -168,6 +168,11 @@ later phase worked. Exit codes are `0` for completion (possibly with warnings),
 Apple session therefore does not prevent independent runner/configuration
 repairs, and failed Xcode preparation preserves existing Xcodes and runtimes.
 
+Simulator cleanup runs after successful downloads and preparation. It preserves
+runtimes associated with every retained Xcode, including runtimes for the same
+platform and OS major/minor version as its SDKs when their patch versions or
+build numbers differ. Unknown runtime metadata is not grounds for deletion.
+
 Python maintenance commands have wall-clock limits, including commands that
 keep printing output without advancing. Ordinary probes default to two
 minutes. Longer operations have explicit limits: Homebrew metadata refreshes

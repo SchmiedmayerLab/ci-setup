@@ -11,6 +11,7 @@
 Run with:  python3 -m unittest discover -s tests
 """
 
+import json
 import pathlib
 import subprocess
 import tempfile
@@ -389,8 +390,29 @@ class XcodeReadinessTests(unittest.TestCase):
 
 
 class RuntimeCleanupTests(unittest.TestCase):
+    @staticmethod
+    def result(value):
+        return subprocess.CompletedProcess([], 0, json.dumps(value), "")
+
+    @staticmethod
+    def match(build="A", *, version="26.5", platform="iphoneos", **extra):
+        return {"chosenRuntimeBuild": build, "platform": f"com.apple.platform.{platform}",
+                "sdkVersion": version, **extra}
+
+    @staticmethod
+    def runtime(build, *, version="26.5", platform="iphonesimulator", **extra):
+        return {"build": build, "version": version,
+                "platformIdentifier": f"com.apple.platform.{platform}",
+                "deletable": True, **extra}
+
     def test_invalid_discovery_never_deletes_any_runtime(self):
-        for discovery in ("invalid", '{"iOS": {}}', "[]"):
+        for discovery in (
+            "invalid", '{"iOS": {}}', "[]",
+            json.dumps({"iOS": self.match(platform="unknown")}),
+            json.dumps({"iOS": self.match(version="unknown")}),
+            json.dumps({"iOS": self.match(defaultBuild=["B"])}),
+            '{"iOS":{"chosenRuntimeBuild":"A"}}',
+        ):
             with self.subTest(discovery=discovery), mock.patch(
                 "cisetup.xcode.run",
                 return_value=subprocess.CompletedProcess([], 0, discovery, ""),
@@ -402,8 +424,8 @@ class RuntimeCleanupTests(unittest.TestCase):
     def test_empty_match_for_any_kept_xcode_skips_all_runtime_cleanup(self):
         with mock.patch("cisetup.xcode.run") as run, mock.patch("cisetup.xcode.warn") as warn:
             run.side_effect = [
-                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
-                subprocess.CompletedProcess([], 0, '{}', ""),
+                self.result({"iOS": self.match()}),
+                self.result({}),
             ]
             xcode._cleanup_runtimes([pathlib.Path("/fake/One"), pathlib.Path("/fake/NoPlatforms")])
             self.assertEqual(run.call_count, 2)
@@ -414,7 +436,7 @@ class RuntimeCleanupTests(unittest.TestCase):
     def test_discovery_failure_for_second_xcode_prevents_all_deletion(self):
         with mock.patch("cisetup.xcode.run") as run:
             run.side_effect = [
-                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
+                self.result({"iOS": self.match()}),
                 SetupError("cannot query other Xcode"),
             ]
             with self.assertRaises(SetupError):
@@ -424,8 +446,8 @@ class RuntimeCleanupTests(unittest.TestCase):
     def test_invalid_runtime_listing_never_deletes(self):
         with mock.patch("cisetup.xcode.run") as run:
             run.side_effect = [
-                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
-                subprocess.CompletedProcess([], 0, '{"runtime":null}', ""),
+                self.result({"iOS": self.match()}),
+                self.result({"runtime": None}),
             ]
             with self.assertRaisesRegex(SetupError, "cannot safely list"):
                 xcode._cleanup_runtimes([pathlib.Path("/fake/One")])
@@ -434,14 +456,58 @@ class RuntimeCleanupTests(unittest.TestCase):
     def test_runtime_deletion_uses_all_kept_xcode_builds(self):
         with mock.patch("cisetup.xcode.run") as run:
             run.side_effect = [
-                subprocess.CompletedProcess([], 0, '{"iOS":{"chosenRuntimeBuild":"A"}}', ""),
-                subprocess.CompletedProcess([], 0, '{"iOS":{"defaultBuild":"B"}}', ""),
-                subprocess.CompletedProcess([], 0, '{"one":{"build":"A"},"two":{"build":"B"},"old":{"build":"C"},"system":{"build":"D","deletable":false}}', ""),
+                self.result({"iOS": self.match("A", defaultBuild="A-default")}),
+                self.result({"iOS": self.match(None, version="27.0", defaultBuild="B")}),
+                self.result({
+                    "one": self.runtime("A", version="26.4"),
+                    "default": self.runtime("A-default", version="26.3"),
+                    "two": self.runtime("B", version="26.2"),
+                    "old": self.runtime("C", version="26.1"),
+                    "system": self.runtime("D", version="26.1", deletable=False),
+                }),
                 subprocess.CompletedProcess([], 0, "", ""),
             ]
             xcode._cleanup_runtimes([pathlib.Path("/fake/One"), pathlib.Path("/fake/Two")])
             deletions = [c.args[0] for c in run.call_args_list if "delete" in c.args[0]]
             self.assertEqual(deletions, [["xcrun", "simctl", "runtime", "delete", "old"]])
+
+    def test_downloaded_runtime_is_retained_despite_sdk_patch_and_build_difference(self):
+        with mock.patch("cisetup.xcode.run") as run:
+            run.side_effect = [
+                self.result({"iphoneos26.5": self.match(
+                    "23F81a", version="26.5.1", defaultBuild="23F81a", sdkBuild="23F81a"
+                )}),
+                self.result({"iphoneos27.0": self.match("24A1", version="27.0")}),
+                self.result({
+                    "downloaded-ios-26.5": self.runtime("23F77"),
+                    "sdk-ios-26.5.1": self.runtime("23F81a", version="26.5.1"),
+                    "downloaded-ios-27.0": self.runtime("24A2", version="27.0"),
+                    "obsolete-ios": self.runtime("23E1", version="26.4"),
+                    "unrelated-tvos": self.runtime("23L1", platform="appletvsimulator"),
+                }),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+            ]
+            xcode._cleanup_runtimes([pathlib.Path("/fake/Xcode26.6"), pathlib.Path("/fake/Xcode27.0")])
+            deletions = [c.args[0][-1] for c in run.call_args_list if "delete" in c.args[0]]
+            self.assertEqual(deletions, ["obsolete-ios", "unrelated-tvos"])
+
+    def test_unknown_runtime_metadata_is_preserved(self):
+        with mock.patch("cisetup.xcode.run") as run:
+            run.side_effect = [
+                self.result({"iOS": self.match()}),
+                self.result({
+                    "missing": {},
+                    "platform": self.runtime("B", platform="futureplatform"),
+                    "version": self.runtime("C", version=None),
+                    "build": self.runtime(["D"]),
+                    "deletable": self.runtime("E", version="26.4", deletable=None),
+                }),
+            ]
+            xcode._cleanup_runtimes([pathlib.Path("/fake/Developer")])
+            self.assertEqual(run.call_count, 2)
 
 
 class XcodeRemovalTests(unittest.TestCase):
