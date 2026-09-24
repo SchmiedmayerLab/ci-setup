@@ -34,7 +34,7 @@ def _version(value: str) -> str:
     return ".".join(parts)
 
 
-def _homebrew(cfg: Config) -> dict:
+def _homebrew(cfg: Config, *, include_dependencies: bool = True) -> dict:
     env = dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1")
     prefix = Path(output(["brew", "--prefix"], env=env))
     info = json.loads(output(["brew", "info", "--json=v2", "--installed"], env=env))
@@ -60,6 +60,8 @@ def _homebrew(cfg: Config) -> dict:
         if receipt is None:
             raise SetupError(f"cannot identify active Homebrew keg for {name}")
         active[name] = {"version": version, "pinned": bool(entry["pinned"])}
+        if not include_dependencies:
+            continue
         dependencies = receipt.get("runtime_dependencies")
         if not isinstance(dependencies, list):
             raise SetupError(f"installed dependency metadata is missing for {name}")
@@ -124,8 +126,12 @@ def _xcodes(cfg: Config) -> dict:
             "selected": selected, "runner": runner_selected}
 
 
-def collect(cfg: Config) -> dict:
-    """Capture independent local probes, retaining errors as incomplete data."""
+def collect(cfg: Config, *, include_homebrew_dependencies: bool = True) -> dict:
+    """Capture independent local probes, retaining errors as incomplete data.
+
+    Only the human info display omits dependencies. Exported and persisted
+    inventories must retain the default full dependency closure.
+    """
     snapshot = {"schema_version": SCHEMA_VERSION, "host": socket.gethostname(),
                 "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "comparable": {}, "errors": []}
@@ -152,7 +158,7 @@ def collect(cfg: Config) -> dict:
                          "build": output(["/usr/bin/sw_vers", "-buildVersion"]),
                          "architecture": platform.machine()})
     probe("runner_version", runner_version)
-    probe("homebrew", lambda: _homebrew(cfg))
+    probe("homebrew", lambda: _homebrew(cfg, include_dependencies=include_homebrew_dependencies))
     probe("xcodes", lambda: _xcodes(cfg))
     return snapshot
 

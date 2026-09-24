@@ -172,7 +172,7 @@ def _print_status(cfg: config.Config, snapshot: dict | None = None) -> int:
 def cmd_info(args, repo_root: Path) -> int:
     """Print current local state without updating tools, services or run records."""
     cfg = config.load(repo_root)
-    snapshot = inventory.collect(cfg)
+    snapshot = inventory.collect(cfg, include_homebrew_dependencies=args.json)
     if args.json:
         print(json.dumps(snapshot, indent=2))
         return 1 if snapshot["errors"] else 0
@@ -220,7 +220,7 @@ def cmd_info(args, repo_root: Path) -> int:
         for error in snapshot["errors"]:
             print(f"  {error}")
 
-    print("\nHomebrew managed formulae and dependencies:")
+    print("\nManaged tools (Homebrew):")
     packages = values.get("homebrew", {})
     for name, package in sorted(packages.get("formulae", {}).items()):
         print(f"  {name}: {package['version']}{' [pinned]' if package['pinned'] else ''}")

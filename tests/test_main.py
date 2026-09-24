@@ -403,7 +403,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(main.main(["info"]), 1)
         output = self.stdout.getvalue()
         for expected in ("abcdef123", "runner:   not installed", "boot agent: not installed",
-                         "Homebrew managed formulae", "Xcode:", "Incomplete checks:",
+                         "Managed tools (Homebrew)", "Xcode:", "Incomplete checks:",
                          "homebrew: command not found: brew"):
             self.assertIn(expected, output)
         self.assert_read_only()

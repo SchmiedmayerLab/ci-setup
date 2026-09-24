@@ -169,9 +169,12 @@ use an existing Python 3.11+ and never bootstrap missing dependencies.
 
 `info` prints a fresh local summary: checkout revision and macOS version,
 runner registration/service and boot-agent state, last maintenance result,
-pending recovery/restart markers, log location/retention, managed Homebrew
-formulae and dependency versions with pins, and installed/global/job-selected
-Xcode builds. It does not update packages, authenticate, restart services,
+pending recovery/restart markers, log location/retention, and
+installed/global/job-selected Xcode builds. A final tools section lists
+versions and pins only for Homebrew
+formulae/casks explicitly requested by setup or configuration. `info --json`
+retains the full dependency inventory for comparisons. It does not update
+packages, authenticate, restart services,
 or write maintenance state. Unavailable probes are listed as incomplete and
 return exit code 1 while the remaining information is still displayed.
 
