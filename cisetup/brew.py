@@ -42,6 +42,11 @@ FORMULAE = [
 ]
 CASKS: list[str] = []
 
+# Network metadata should finish promptly; source builds on older runners
+# need substantially more time. Neither may hold maintenance indefinitely.
+_METADATA_TIMEOUT = 10 * 60
+_PACKAGE_TIMEOUT = 60 * 60
+
 
 @dataclass
 class BrewEnv:
@@ -64,7 +69,9 @@ def _resolve_names(formulae: list[str], casks: list[str]) -> tuple[dict, dict]:
     if not names:
         return formula_map, cask_map
     try:
-        info = json.loads(output(["brew", "info", "--json=v2", *names]))
+        info = json.loads(output(
+            ["brew", "info", "--json=v2", *names], timeout=_METADATA_TIMEOUT
+        ))
     except (SetupError, json.JSONDecodeError) as e:
         raise SetupError(
             f"`brew info` failed — is one of the configured packages misspelled? ({e})"
@@ -105,7 +112,7 @@ def _ensure_xcpretty() -> str | None:
     )
     if installed.returncode != 0:
         log("Installing xcpretty (ruby user gem)")
-        run([gem, "install", "--user-install", "--no-document", "xcpretty"])
+        run([gem, "install", "--user-install", "--no-document", "xcpretty"], timeout=15 * 60)
         ok("xcpretty installed")
     else:
         ok("xcpretty already installed")
@@ -158,22 +165,24 @@ def ensure(cfg: Config) -> BrewEnv:
                        HOMEBREW_NO_INSTALL_CLEANUP="1")
     errors: list[str] = []
 
-    def attempt(cmd: list[str], *, capture: bool = False) -> bool:
+    def attempt(cmd: list[str], *, capture: bool = False,
+                timeout: float = _PACKAGE_TIMEOUT) -> bool:
         try:
-            run(cmd, env=command_env, capture=capture)
+            run(cmd, env=command_env, capture=capture, timeout=timeout)
             return True
         except SetupError as e:
             errors.append(str(e))
             warn(str(e))
             return False
 
-    attempt(["brew", "update", "--quiet"])
+    attempt(["brew", "update", "--quiet"], timeout=_METADATA_TIMEOUT)
     formulae = list(dict.fromkeys(FORMULAE + cfg.brew_extra_formulae))
     casks = list(dict.fromkeys(CASKS + cfg.brew_extra_casks))
     formula_map, cask_map = _resolve_names(formulae, casks)
     installed = set(output(["brew", "list", "--formula", "-1"], env=command_env).split())
     missing = [f for f in formulae if formula_map[f] not in installed]
-    outdated = set(output(["brew", "outdated", "--formula", "--quiet"], env=command_env).split())
+    outdated = set(output(["brew", "outdated", "--formula", "--quiet"],
+                          env=command_env, timeout=_METADATA_TIMEOUT).split())
     pinned = set(output(["brew", "list", "--pinned"], env=command_env).split())
     wanted = set(formula_map.values())
     held = sorted(wanted & outdated & pinned)
@@ -194,7 +203,8 @@ def ensure(cfg: Config) -> BrewEnv:
 
     if casks:
         installed_casks = set(output(["brew", "list", "--cask", "-1"], env=command_env).split())
-        outdated_casks = set(output(["brew", "outdated", "--cask", "--quiet"], env=command_env).split())
+        outdated_casks = set(output(["brew", "outdated", "--cask", "--quiet"],
+                                    env=command_env, timeout=_METADATA_TIMEOUT).split())
         for name in casks:
             action = "install" if cask_map[name] not in installed_casks else "upgrade"
             if action == "upgrade" and cask_map[name] not in outdated_casks:
@@ -212,7 +222,7 @@ def ensure(cfg: Config) -> BrewEnv:
         _remove_autoupdate()
     except SetupError as e:
         errors.append(str(e))
-    attempt(["git", "lfs", "install"], capture=True)
+    attempt(["git", "lfs", "install"], capture=True, timeout=120)
     try:
         brew_env.gem_bin = _ensure_xcpretty()
     except SetupError as e:

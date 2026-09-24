@@ -182,7 +182,8 @@ def select_desired(
 
 def _xcodebuild(args: list[str], developer_dir: Path, *, check: bool = True):
     env = dict(os.environ, DEVELOPER_DIR=str(developer_dir))
-    return run(["/usr/bin/xcodebuild", *args], env=env, check=check)
+    timeout = 30 * 60 if "-runFirstLaunch" in args else 4 * 60 * 60
+    return run(["/usr/bin/xcodebuild", *args], env=env, check=check, timeout=timeout)
 
 
 # --- passwordless xcode-select (sudoers rule, ported from StanfordBDHG) ------
@@ -242,7 +243,8 @@ def _unattended_first_launch(developer_dir: Path) -> bool:
     if select.returncode != 0:
         return False
     try:
-        result = run(["sudo", "-n", "/usr/bin/xcodebuild", "-runFirstLaunch"], check=False)
+        result = run(["sudo", "-n", "/usr/bin/xcodebuild", "-runFirstLaunch"],
+                     check=False, timeout=30 * 60)
     finally:
         if previous != str(developer_dir):
             restore = run(
@@ -275,7 +277,8 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
                 log(f"Xcode {release.identifier}: retrying first-launch setup with sudo")
                 # sudo strips DEVELOPER_DIR; use this Xcode's executable.
                 util.sudo_run(
-                    [developer_dir / "usr/bin/xcodebuild", "-runFirstLaunch"]
+                    [developer_dir / "usr/bin/xcodebuild", "-runFirstLaunch"],
+                    timeout=30 * 60,
                 )
             elif not _unattended_first_launch(developer_dir):
                 raise SetupError(
@@ -357,13 +360,13 @@ def ensure(cfg: Config) -> Path | None:
         )
 
     failures = []
-    refresh = run(["xcodes", "update"], check=False, capture=True)
+    refresh = run(["xcodes", "update"], check=False, capture=True, timeout=10 * 60)
     if refresh.returncode != 0:
         message = "`xcodes update` failed; cached releases cannot confirm the latest Xcode"
         failures.append(message)
         warn(message)
 
-    releases = parse_list(output(["xcodes", "list"]))
+    releases = parse_list(output(["xcodes", "list"], timeout=5 * 60))
     desired, latest = select_desired(releases, cfg.xcode_install_beta)
     installed = parse_installed(output(["xcodes", "installed"]))
     installed_builds = {(i.identifier, i.build) for i in installed}
@@ -377,7 +380,9 @@ def ensure(cfg: Config) -> Path | None:
         ]
         log(f"Installing Xcode {release.identifier}")
         try:
-            run(install_cmd, stdin_devnull=not util.INTERACTIVE)
+            # Downloading and extracting a full Xcode can be quiet for a long
+            # time. Use an absolute ceiling, not an output-idle timeout.
+            run(install_cmd, stdin_devnull=not util.INTERACTIVE, timeout=4 * 60 * 60)
         except SetupError as e:
             message = (
                 f"Xcode {release.identifier} install failed: {e}; "
@@ -457,7 +462,7 @@ def _remove_unwanted_xcodes(
             continue
         log(f"Removing unwanted Xcode {entry.identifier} ({entry.path})")
         try:
-            run(["xcodes", "uninstall", entry.identifier])
+            run(["xcodes", "uninstall", entry.identifier], timeout=30 * 60)
         except SetupError as e:
             failures.append(f"could not uninstall Xcode {entry.identifier}: {e}")
     if failures:
@@ -520,7 +525,8 @@ def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
         name = f"{runtime.get('runtimeIdentifier', uuid)} ({build})"
         log(f"Removing simulator runtime no kept Xcode uses: {name}")
         try:
-            run(["xcrun", "simctl", "runtime", "delete", uuid], env=env, capture=True)
+            run(["xcrun", "simctl", "runtime", "delete", uuid],
+                env=env, capture=True, timeout=30 * 60)
         except SetupError as e:
             failures.append(f"could not delete runtime {name}: {e}")
     if failures:
@@ -563,7 +569,7 @@ def ensure_wwdr_certificate() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         cert = Path(tmp) / "AppleWWDRCAG3.cer"
         try:
-            util.download(_WWDR_CERT_URL, cert)
+            util.download(_WWDR_CERT_URL, cert, timeout=120)
         except SetupError as e:
             warn(f"could not download the WWDR certificate — skipping ({e})")
             return

@@ -122,6 +122,27 @@ later phase worked. Exit codes are `0` for completion (possibly with warnings),
 Apple session therefore does not prevent independent runner/configuration
 repairs, and failed Xcode preparation preserves existing Xcodes and runtimes.
 
+Python maintenance commands have wall-clock limits, including commands that
+keep printing output without advancing. Ordinary probes default to two
+minutes. Longer operations have explicit limits: Homebrew metadata refreshes
+get ten minutes, each package install/upgrade gets one hour, each Xcode
+install or platform/Metal download gets four hours, and first-launch setup
+and Xcode/runtime removal get thirty minutes. Runner registration gets five
+minutes, archive extraction ten minutes, and service commands one minute.
+The runner archive download checks a thirty-minute transfer deadline between
+reads, with a separate sixty-second socket timeout. During a long transfer it
+logs the bytes received every five minutes. The initial shell bootstrap (installing Homebrew
+and Python on a fresh Mac) is outside these Python limits.
+
+Long-running commands with visible output emit a redacted **still running**
+message every five minutes with elapsed time and their limit. This confirms
+that setup is monitoring the child, not that it is making progress. Captured
+commands, which can return credentials, do not emit these messages. A timeout
+stops the command's process group and becomes a normal recorded failure;
+independent work continues and the maintenance pause attempts service recovery.
+Output silence alone is not treated as a hang: Xcode extraction and builds
+can legitimately be quiet.
+
 ## The boot agent (automatic re-runs)
 
 `converge` installs `~/Library/LaunchAgents/com.selfhosted-runner.setup.plist`,
@@ -137,9 +158,11 @@ maintenance and finish with a failure result. Git never prompts or discards
 local changes. Homebrew Python upgrades also trigger a restart before later
 phases use the interpreter.
 
-Unattended setup never prompts. Passwordless Xcode sudo rules may be used;
-other work requiring interaction fails or is reported as deferred. Output and
-phase results are retained as described below.
+Unattended setup gives child commands no stdin or controlling terminal.
+Passwordless Xcode sudo rules may be used; work requiring interaction fails,
+is reported as deferred, or reaches its command timeout if a tool retries a
+prompt instead of exiting. Output and phase results are retained as described
+below.
 Setting `boot.install_agent = false` in `config.toml` removes the agent on
 the next manual converge. If the active agent changes its own definition,
 the new definition takes effect at the next login; renaming or disabling the
@@ -221,6 +244,16 @@ interactively on each runner. `xcodes` reuses authentication when Apple accepts
 the cached session. When unattended authentication fails, run `./setup`
 interactively **on that runner** and complete verification. Session validity
 is controlled by Apple; this cannot guarantee unattended downloads forever.
+
+`xcodes` 2.1.0 has no CLI session-validation command or flag to require an
+existing valid session without attempting login. Its underlying authentication
+library has a validate-only API, but setup does not currently integrate it.
+In particular, one phone-selection prompt retries on EOF; supplying no stdin
+does not guarantee an immediate authentication failure. The install deadline
+bounds that case, but is not an early 2FA detector. See the upstream
+[CLI definition](https://github.com/XcodesOrg/xcodes/blob/2.1.0/Sources/xcodes/App.swift),
+[session validation](https://github.com/XcodesOrg/XcodesLoginKit/blob/929f9aac3140caf7b64cbb5385f4f645c5f9913d/Sources/XcodesLoginKit/Client.swift#L413-L419),
+and [phone-selection implementation](https://github.com/XcodesOrg/xcodes/blob/2.1.0/Sources/XcodesKit/TwoFactorAuthentication.swift#L101-L114).
 
 App-specific passwords and App Store Connect API keys do not authenticate
 Xcode downloads ([xcodes maintainer explanation](https://github.com/XcodesOrg/xcodes/issues/293#issuecomment-2074920422)).

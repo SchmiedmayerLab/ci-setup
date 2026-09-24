@@ -218,7 +218,7 @@ class XcodeMaintenanceTests(unittest.TestCase):
             "16.3 (16E140) /fake/Xcode-16.3.app\n"
             "16.4 (16F6) /fake/Xcode-16.4.app\n"
         )
-        self.output.side_effect = lambda cmd: (
+        self.output.side_effect = lambda cmd, **kwargs: (
             self.listing if cmd == ["xcodes", "list"] else self.installed
         )
 
@@ -481,7 +481,7 @@ class XcodeRemovalTests(unittest.TestCase):
                 [old, ready], desired, protected_developer_dirs={replacement}
             )
             self.assertEqual(retained, [ready])
-            run.assert_called_once_with(["xcodes", "uninstall", "16.2"])
+            run.assert_called_once_with(["xcodes", "uninstall", "16.2"], timeout=30 * 60)
 
 
 class RunnerDeveloperDirectoryTests(unittest.TestCase):

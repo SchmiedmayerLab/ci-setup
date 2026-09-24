@@ -31,6 +31,23 @@ class SetupError(Exception):
 INTERACTIVE = True
 WARNINGS: list[str] = []
 
+# Callers with legitimately long work supply an explicit limit. Keep these
+# values injectable so watchdog behavior can be tested without waiting minutes.
+DEFAULT_COMMAND_TIMEOUT = 120.0
+DEFAULT_HEARTBEAT_INTERVAL = 300.0
+DEFAULT_SUDO_TIMEOUT = 600.0
+PROCESS_CLEANUP_TIMEOUT = 5.0
+DOWNLOAD_TIMEOUT = 30 * 60.0
+DOWNLOAD_READ_TIMEOUT = 60.0
+DOWNLOAD_HEARTBEAT_INTERVAL = 300.0
+
+
+class _DefaultTimeout:
+    pass
+
+
+_DEFAULT_TIMEOUT = _DefaultTimeout()
+
 _USE_COLOR = sys.stdout.isatty()
 
 
@@ -89,6 +106,24 @@ def _stop_process_group(pid: int) -> None:
         pass
 
 
+def _drain_stopped_process(child: subprocess.Popen) -> tuple[str | None, str | None]:
+    """Do not let an escaped descendant's pipe defeat the command deadline."""
+    try:
+        return child.communicate(timeout=PROCESS_CLEANUP_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        # A descendant can create its own session while retaining a captured
+        # pipe. Our process group is stopped; do not wait for that pipe's EOF.
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream is not None:
+                stream.close()
+        child.wait(timeout=PROCESS_CLEANUP_TIMEOUT)
+
+        def decoded(value):
+            return value.decode(errors="replace") if isinstance(value, bytes) else value
+
+        return decoded(error.output), decoded(error.stderr)
+
+
 def run(
     cmd: list,
     *,
@@ -97,12 +132,20 @@ def run(
     cwd=None,
     env: dict | None = None,
     stdin_devnull: bool = False,
-    timeout: float | None = None,
+    timeout: float | None | _DefaultTimeout = _DEFAULT_TIMEOUT,
+    heartbeat_interval: float | None = DEFAULT_HEARTBEAT_INTERVAL,
     input: str | None = None,
     start_new_session: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run a command. With capture=True stdout/stderr are collected; otherwise
-    the child inherits our stdio so long-running tools stay visible."""
+    """Run a command with a default deadline, or explicit ``None`` to opt out.
+
+    Captured commands never emit heartbeat/command output. Other long-running
+    commands report elapsed time, which is liveness information, not progress.
+    """
+    if timeout is _DEFAULT_TIMEOUT:
+        timeout = DEFAULT_COMMAND_TIMEOUT
+    if heartbeat_interval is not None and heartbeat_interval <= 0:
+        raise ValueError("heartbeat interval must be positive or None")
     argv = [str(c) for c in cmd]
     # Captured Keychain/API output is deliberately never logged. Known
     # argument secrets are also scrubbed if a child echoes its arguments.
@@ -134,7 +177,7 @@ def run(
         # A distinct group lets cancellation stop descendants without also
         # signalling setup. Unlike setsid(), it retains the controlling TTY.
         kwargs["process_group"] = 0
-    shown = shlex.join(_redact(argv))
+    shown = runlog.redact(shlex.join(_redact(argv)))
     tty_fd = None
     foreground = None
     previous_ttou = None
@@ -167,7 +210,10 @@ def run(
                     except OSError as error:
                         if error.errno not in (errno.ESRCH, errno.EPERM) or child.poll() is None:
                             raise
-                deadline = time.monotonic() + timeout if timeout is not None else None
+                started = time.monotonic()
+                deadline = started + timeout if timeout is not None else None
+                heartbeat = (started + heartbeat_interval
+                             if not capture and heartbeat_interval is not None else None)
                 first_communication = True
                 while True:
                     remaining = None if deadline is None else max(0, deadline - time.monotonic())
@@ -187,10 +233,15 @@ def run(
                             raise KeyboardInterrupt
                         if check and returncode is not None and returncode != 0:
                             _stop_process_group(child.pid)
-                            stdout, stderr = child.communicate()
+                            stdout, stderr = _drain_stopped_process(child)
                             break
-                        if deadline is not None and time.monotonic() >= deadline:
+                        now = time.monotonic()
+                        if deadline is not None and now >= deadline:
                             raise subprocess.TimeoutExpired(argv, timeout)
+                        if heartbeat is not None and now >= heartbeat:
+                            limit = f"timeout {timeout:g}s" if timeout is not None else "no deadline"
+                            log(f"still running after {now - started:.0f}s ({limit}): {shown}")
+                            heartbeat = now + heartbeat_interval
                 if child.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
                     raise KeyboardInterrupt
                 if check and child.returncode != 0:
@@ -199,7 +250,7 @@ def run(
                 # Both interactive and unattended commands own a process
                 # group: no build/download descendant may outlive cleanup.
                 _stop_process_group(child.pid)
-                child.communicate()
+                _drain_stopped_process(child)
                 raise
             finally:
                 if tty_fd is not None:
@@ -257,20 +308,44 @@ def sudo_run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
     """Run a command with sudo. Refuses in non-interactive mode: the automated
     (boot-time) path must work entirely without sudo."""
     require_interactive(f"`sudo {shlex.join(str(c) for c in cmd)}`")
+    kwargs.setdefault("timeout", DEFAULT_SUDO_TIMEOUT)
     return run(["sudo", *cmd], **kwargs)
 
 
-def download(url: str, dest: Path) -> None:
-    """Download a file with a coarse progress display when on a TTY."""
+def download(url: str, dest: Path, *, timeout: float | _DefaultTimeout = _DEFAULT_TIMEOUT) -> None:
+    """Download with socket and total deadlines, plus coarse TTY progress.
+
+    Read one network chunk at a time so slow, continuous traffic cannot keep a
+    large buffered read alive past the overall deadline. A pending socket read
+    remains bounded by DOWNLOAD_READ_TIMEOUT.
+    """
+    if timeout is _DEFAULT_TIMEOUT:
+        timeout = DOWNLOAD_TIMEOUT
     request = urllib.request.Request(url, headers={"User-Agent": "ci-runner-setup"})
+    started = time.monotonic()
+    deadline = started + timeout
+    heartbeat = started + DOWNLOAD_HEARTBEAT_INTERVAL
     try:
-        with urllib.request.urlopen(request, timeout=60) as response, open(dest, "wb") as f:
+        with urllib.request.urlopen(request, timeout=min(DOWNLOAD_READ_TIMEOUT, timeout)) as response, open(dest, "wb") as f:
             total = int(response.headers.get("Content-Length") or 0)
             done = 0
             last_pct = -1
-            while chunk := response.read(256 * 1024):
+            read_chunk = getattr(response, "read1", response.read)
+            while True:
+                if time.monotonic() >= deadline:
+                    raise SetupError(f"download timed out after {timeout:g}s: {url}")
+                chunk = read_chunk(256 * 1024)
+                now = time.monotonic()
+                if now >= deadline:
+                    raise SetupError(f"download timed out after {timeout:g}s: {url}")
+                if not chunk:
+                    break
                 f.write(chunk)
                 done += len(chunk)
+                if now >= heartbeat:
+                    amount = f"{done:,}/{total:,}" if total else f"{done:,}"
+                    log(f"downloaded {amount} bytes after {now - started:.0f}s")
+                    heartbeat = now + DOWNLOAD_HEARTBEAT_INTERVAL
                 if total and sys.stdout.isatty():
                     pct = done * 100 // total
                     if pct != last_pct:

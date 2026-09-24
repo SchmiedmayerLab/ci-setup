@@ -164,7 +164,7 @@ def ensure_installed(cfg: Config) -> None:
         cfg.runner_dir.mkdir(parents=True, exist_ok=True)
         # Extracting over an existing install is the supported manual-update
         # path; registration files (.runner/.credentials) are not in the tar.
-        run(["/usr/bin/tar", "xzf", tarball, "-C", cfg.runner_dir])
+        run(["/usr/bin/tar", "xzf", tarball, "-C", cfg.runner_dir], timeout=10 * 60)
         (cfg.runner_dir / _VERSION_MARKER).write_text(latest_str + "\n")
     ok(f"runner v{latest_str} installed")
 
@@ -312,7 +312,7 @@ def _register(cfg: Config, token: str | None = None) -> None:
         args += ["--labels", ",".join(cfg.labels)]
     if cfg.group:
         args += ["--runnergroup", cfg.group]
-    run(args, cwd=cfg.runner_dir)
+    run(args, cwd=cfg.runner_dir, timeout=5 * 60)
     (cfg.runner_dir / _STATE_FILE).write_text(
         json.dumps(desired_state(cfg), indent=2) + "\n"
     )
@@ -326,7 +326,8 @@ def deregister(cfg: Config) -> None:
     token = _removal_token(cfg)
     uninstall_service(cfg)
     result = run(
-        ["./config.sh", "remove", "--token", token], cwd=cfg.runner_dir, check=False
+        ["./config.sh", "remove", "--token", token], cwd=cfg.runner_dir,
+        check=False, timeout=5 * 60,
     )
     if result.returncode != 0:
         raise SetupError(

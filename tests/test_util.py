@@ -11,10 +11,12 @@
 import pathlib
 import sys
 import unittest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from cisetup.util import _redact, fmt_version, vtuple  # noqa: E402
+from cisetup import runlog, util  # noqa: E402
 
 
 class RedactTests(unittest.TestCase):
@@ -255,6 +257,162 @@ class ProcessCleanupTests(unittest.TestCase):
             """).replace("CHILD", repr(child))
             output = self.run_with_terminal(driver, b"\x03", directory=directory)
             self.assertIn("interrupted; terminal restored", output)
+
+
+class WatchdogTests(unittest.TestCase):
+    """Only launch synthetic Python children, never installed CI tools."""
+
+    def test_default_timeout_is_applied_and_explicit_none_opts_out(self):
+        import time
+
+        with patch.object(util, "INTERACTIVE", False), patch.object(util, "DEFAULT_COMMAND_TIMEOUT", .1):
+            started = time.monotonic()
+            with self.assertRaisesRegex(util.SetupError, "command timed out"):
+                util.run([sys.executable, "-c", "import time; time.sleep(10)"], capture=True)
+            self.assertLess(time.monotonic() - started, 2)
+            result = util.run(
+                [sys.executable, "-c", "import time; time.sleep(.2); print('finished')"],
+                capture=True, timeout=None,
+            )
+            self.assertEqual(result.stdout.strip(), "finished")
+
+    def test_repeated_output_does_not_extend_deadline_and_timeout_stops_descendants(self):
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as directory:
+            descendant = (
+                "import pathlib,time; time.sleep(.7); "
+                "pathlib.Path('survived-timeout').touch()"
+            )
+            child = (
+                "import pathlib,subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable,'-c',{descendant!r}]); "
+                "pathlib.Path('started').touch(); "
+                "exec('while True:\\n print(\"repeated output\", flush=True); time.sleep(.01)')"
+            )
+            with patch.object(util, "INTERACTIVE", False):
+                with self.assertRaisesRegex(util.SetupError, "command timed out"):
+                    util.run([sys.executable, "-c", child], cwd=directory, capture=True, timeout=.3)
+            self.assertTrue((pathlib.Path(directory) / "started").exists())
+            time.sleep(.8)
+            self.assertFalse((pathlib.Path(directory) / "survived-timeout").exists())
+
+    def test_heartbeat_reports_elapsed_time_without_exposing_argument_secrets(self):
+        runlog.register_secret("known-heartbeat-secret")
+        script = "import time; time.sleep(.35)"
+        with patch.object(util, "INTERACTIVE", False), patch.object(util, "log") as log:
+            util.run(
+                [sys.executable, "-c", script, "--token", "argument-heartbeat-secret",
+                 "known-heartbeat-secret"],
+                timeout=2, heartbeat_interval=.05,
+            )
+        messages = "\n".join(call.args[0] for call in log.call_args_list)
+        self.assertIn("still running after", messages)
+        self.assertIn("timeout 2s", messages)
+        self.assertIn("<redacted>", messages)
+        self.assertNotIn("argument-heartbeat-secret", messages)
+        self.assertNotIn("known-heartbeat-secret", messages)
+
+    def test_captured_commands_never_emit_heartbeats_or_captured_output(self):
+        with patch.object(util, "INTERACTIVE", False), patch.object(util, "log") as log:
+            result = util.run(
+                [sys.executable, "-c", "import time; print('private-capture'); time.sleep(.35)"],
+                capture=True, heartbeat_interval=.01,
+            )
+        log.assert_not_called()
+        self.assertEqual(result.stdout.strip(), "private-capture")
+
+    def test_escaped_descendant_cannot_keep_timeout_cleanup_waiting_for_pipe_eof(self):
+        import os
+        import signal
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as directory:
+            pidfile = pathlib.Path(directory) / "escaped-pid"
+            child = (
+                "import pathlib,subprocess,sys,time; "
+                "escaped=subprocess.Popen([sys.executable,'-c','import time; time.sleep(3)'], "
+                "start_new_session=True); "
+                "pathlib.Path('escaped-pid').write_text(str(escaped.pid)); time.sleep(10)"
+            )
+            try:
+                with patch.object(util, "INTERACTIVE", False), patch.object(util, "PROCESS_CLEANUP_TIMEOUT", .1):
+                    started = time.monotonic()
+                    with self.assertRaisesRegex(util.SetupError, "command timed out"):
+                        util.run([sys.executable, "-c", child], cwd=directory, capture=True, timeout=.3)
+                    self.assertLess(time.monotonic() - started, 2)
+                self.assertTrue(pidfile.exists())
+            finally:
+                if pidfile.exists():
+                    try:
+                        os.kill(int(pidfile.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_sudo_gives_interactive_prompt_more_time_without_overriding_explicit_limit(self):
+        with patch.object(util, "INTERACTIVE", True), patch.object(util, "run") as run:
+            util.sudo_run(["synthetic-command"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 600)
+            util.sudo_run(["synthetic-command"], timeout=1800)
+            self.assertEqual(run.call_args.kwargs["timeout"], 1800)
+
+
+class DownloadDeadlineTests(unittest.TestCase):
+    """Fake response data and clocks only; never make a network request."""
+
+    def test_slow_trickle_is_limited_even_when_each_read_returns_data(self):
+        import tempfile
+
+        response = MagicMock()
+        response.headers = {}
+        response.read1.side_effect = [b"first", b"late"]
+        response.__enter__.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "download"
+            with patch.object(util.urllib.request, "urlopen", return_value=response) as urlopen, \
+                    patch.object(util, "DOWNLOAD_TIMEOUT", 1), \
+                    patch.object(util.time, "monotonic", side_effect=[0, 0, .4, .4, 1.1]):
+                with self.assertRaisesRegex(util.SetupError, "download timed out after 1s"):
+                    util.download("https://example.invalid/artifact", target)
+            self.assertEqual(target.read_bytes(), b"first")
+            self.assertEqual(response.read1.call_count, 2)
+            response.read.assert_not_called()
+            self.assertEqual(urlopen.call_args.kwargs["timeout"], 1)
+            response.__exit__.assert_called_once()
+
+    def test_complete_download_with_explicit_deadline(self):
+        import tempfile
+
+        response = MagicMock()
+        response.headers = {"Content-Length": "8"}
+        response.read1.side_effect = [b"complete", b""]
+        response.__enter__.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "download"
+            with patch.object(util.urllib.request, "urlopen", return_value=response) as urlopen, \
+                    patch.object(util.time, "monotonic", return_value=0), \
+                    patch.object(util.sys.stdout, "isatty", return_value=False):
+                util.download("https://example.invalid/artifact", target, timeout=120)
+            self.assertEqual(target.read_bytes(), b"complete")
+            self.assertEqual(urlopen.call_args.kwargs["timeout"], 60)
+
+    def test_download_heartbeat_reports_received_bytes_without_url(self):
+        import tempfile
+
+        response = MagicMock()
+        response.headers = {"Content-Length": "16"}
+        response.read1.side_effect = [b"received", b""]
+        response.__enter__.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "download"
+            with patch.object(util.urllib.request, "urlopen", return_value=response), \
+                    patch.object(util.time, "monotonic", side_effect=[0, 0, 301, 301, 302]), \
+                    patch.object(util.sys.stdout, "isatty", return_value=False), \
+                    patch.object(util, "log") as log:
+                util.download("https://example.invalid/artifact?private=token", target)
+            log.assert_called_once_with("downloaded 8/16 bytes after 301s")
 
 
 if __name__ == "__main__":
