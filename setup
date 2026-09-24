@@ -17,6 +17,7 @@
 # Usage:
 #   ./setup                        converge the machine (default)
 #   ./setup status                 show current state
+#   ./setup info                   summarize setup, services and tool versions
 #   ./setup update                 fast-forward this checkout, then converge
 #   ./setup logs                   show recent maintenance output
 #   ./setup status --json          export a comparable runner inventory
@@ -116,7 +117,7 @@ fi
 READ_ONLY=0
 for arg in "$@"; do
   case "$arg" in
-    status|logs|compare|--help|-h) READ_ONLY=1 ;;
+    status|info|logs|compare|--help|-h) READ_ONLY=1 ;;
   esac
 done
 if (( READ_ONLY )); then

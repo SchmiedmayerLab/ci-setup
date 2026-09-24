@@ -151,6 +151,8 @@ active agent requires a subsequent manual converge to unload its old schedule.
 ./setup                # converge (default)
 ./setup update         # fast-forward source, restart if changed, converge/reload boot agent
 ./setup status         # show runner/service/Xcode state
+./setup info           # current setup revision, services, tool versions/pins and Xcode selections
+./setup info --json    # same comparable inventory as status --json
 ./setup logs --lines 200 # recent timestamped maintenance output
 ./setup status --json  # read-only comparable inventory
 ./setup compare /tmp/other-runner.json # nonzero if different or incomplete
@@ -162,8 +164,16 @@ active agent requires a subsequent manual converge to unload its old schedule.
 
 `update` stops before changing packages if its pull fails. It updates an
 existing runner's registration only when its configuration changed; unchanged
-registrations retain their identity. `status`, `logs`, `compare`, and help
+registrations retain their identity. `status`, `info`, `logs`, `compare`, and help
 use an existing Python 3.11+ and never bootstrap missing dependencies.
+
+`info` prints a fresh local summary: checkout revision and macOS version,
+runner registration/service and boot-agent state, last maintenance result,
+pending recovery/restart markers, log location/retention, managed Homebrew
+formulae and dependency versions with pins, and installed/global/job-selected
+Xcode builds. It does not update packages, authenticate, restart services,
+or write maintenance state. Unavailable probes are listed as incomplete and
+return exit code 1 while the remaining information is still displayed.
 
 ## Logs and keeping runners in sync
 

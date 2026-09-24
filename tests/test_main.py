@@ -360,8 +360,69 @@ class MainTests(unittest.TestCase):
     def test_readonly_json_status_does_not_log_lock_update_or_mutate(self):
         snapshot = {"schema_version": 1, "host": "test", "comparable": {}, "errors": []}
         self.inventory.return_value = snapshot
-        self.assertEqual(main.main(["status", "--json", "--non-interactive"]), 0)
-        self.assertEqual(json.loads(self.stdout.getvalue()), snapshot)
+        for command in ("status", "info"):
+            with self.subTest(command=command):
+                self.stdout.seek(0)
+                self.stdout.truncate()
+                self.assertEqual(main.main([command, "--json", "--non-interactive"]), 0)
+                self.assertEqual(json.loads(self.stdout.getvalue()), snapshot)
+                self.assert_read_only()
+
+    def test_info_reports_actual_versions_pins_and_distinct_xcode_selections(self):
+        self.inventory.return_value = {
+            "schema_version": 1, "host": "example-runner", "captured_at": "2026-09-24T12:00:00Z",
+            "errors": [], "comparable": {
+                "setup": {"commit": "abcdef123", "dirty": True},
+                "os": {"version": "27.0", "build": "26A428", "architecture": "arm64"},
+                "runner_version": "2.337.0",
+                "homebrew": {"formulae": {"node": {"version": "26.9.0", "pinned": True},
+                                            "firebase-cli": {"version": "15.30.2", "pinned": False}},
+                             "casks": {}},
+                "xcodes": {"managed": True,
+                           "installed": [{"version": "27.0", "build": "18A1", "prerelease": ["beta", 2]}],
+                           "selected": {"version": "26.6", "build": "17F42"},
+                           "runner": {"version": "26.5", "build": "17E1", "source": "DEVELOPER_DIR"}},
+            },
+        }
+        self.assertEqual(main.main(["info", "--non-interactive"]), 0)
+        output = self.stdout.getvalue()
+        for expected in ("example-runner", "abcdef123 (uncommitted changes)", "27.0 (26A428), arm64",
+                         "v2.337.0", "node: 26.9.0 [pinned]", "firebase-cli: 15.30.2",
+                         "27.0 beta 2 (18A1)", "global selection: 26.6 (17F42)",
+                         "runner selection: 26.5 (17E1) via DEVELOPER_DIR", "Last run: not recorded"):
+            self.assertIn(expected, output)
+        self.assert_read_only()
+
+    def test_info_keeps_partial_state_when_runner_is_absent_and_probes_fail(self):
+        self.cfg.runner_dir = self.root / "missing-runner"
+        self.inventory.return_value = {
+            "host": "example-runner", "captured_at": "2026-09-24T12:00:00Z",
+            "comparable": {"setup": {"commit": "abcdef123", "dirty": False}},
+            "errors": ["homebrew: command not found: brew", "xcodes: unavailable"],
+        }
+        self.assertEqual(main.main(["info"]), 1)
+        output = self.stdout.getvalue()
+        for expected in ("abcdef123", "runner:   not installed", "boot agent: not installed",
+                         "Homebrew managed formulae", "Xcode:", "Incomplete checks:",
+                         "homebrew: command not found: brew"):
+            self.assertIn(expected, output)
+        self.assert_read_only()
+
+    def test_info_continues_after_service_probe_failure(self):
+        self.patch("cisetup.runner.service_installed", return_value=True)
+        self.patch("cisetup.runner.service_running", side_effect=SetupError("service status unavailable"))
+        self.inventory.return_value = {
+            "host": "example-runner", "captured_at": "2026-09-24T12:00:00Z", "errors": [],
+            "comparable": {"homebrew": {"formulae": {"node": {"version": "26.9.0", "pinned": False}},
+                                       "casks": {}}},
+        }
+        self.assertEqual(main.main(["info"]), 1)
+        output = self.stdout.getvalue()
+        self.assertIn("node: 26.9.0", output)
+        self.assertIn("runner status: service status unavailable", output)
+        self.assert_read_only()
+
+    def assert_read_only(self):
         self.acquire.assert_not_called()
         self.release.assert_not_called()
         self.recover.assert_not_called()

@@ -111,10 +111,16 @@ def cmd_status(args, repo_root: Path) -> int:
         snapshot = inventory.collect(cfg)
         print(json.dumps(snapshot, indent=2))
         return 1 if snapshot["errors"] else 0
+    return _print_status(cfg)
+
+
+def _print_status(cfg: config.Config, snapshot: dict | None = None) -> int:
     previous = util.STATE_DIR / "last-run.json"
     if previous.exists():
         try:
             last = json.loads(previous.read_text())
+            if not isinstance(last, dict):
+                raise ValueError("expected a run-summary object")
             print(f"Last run: {last.get('status', 'unknown')} "
                   f"(started {last.get('started', 'unknown')}, id {last.get('run_id', 'unknown')})")
             for phase in last.get("phases", []):
@@ -122,16 +128,24 @@ def cmd_status(args, repo_root: Path) -> int:
                     print(f"  {phase['name']}: {phase['status']} — {phase.get('detail', '')}")
         except (ValueError, OSError) as error:
             warn(f"could not read previous run summary: {error}")
+    else:
+        print("Last run: not recorded")
     print(f"Logs: {runlog.LOG_DIR} (./setup logs)")
     print(f"{util.BOLD}CI runner status{util.OFF}")
     print(f"  target:   {cfg.github_url}")
     print(f"  name:     {cfg.runner_name}")
+    agent = Path.home() / "Library/LaunchAgents" / f"{cfg.boot_label}.plist"
+    print(f"  boot agent: {'installed' if agent.exists() else 'not installed'}")
 
     if not cfg.runner_dir.exists():
         print(f"  runner:   not installed ({cfg.runner_dir} missing) — run ./setup")
         return 0
-    version = runner.installed_version(cfg.runner_dir)
-    print(f"  version:  {'v' + util.fmt_version(version) if version else 'unknown'}")
+    if snapshot is None:
+        version = runner.installed_version(cfg.runner_dir)
+        version_text = util.fmt_version(version) if version else None
+    else:
+        version_text = snapshot["comparable"].get("runner_version")
+    print(f"  version:  {'v' + version_text if version_text else 'unknown'}")
 
     if runner.is_registered(cfg):
         drift = runner.recorded_state(cfg) != runner.desired_state(cfg)
@@ -145,16 +159,76 @@ def cmd_status(args, repo_root: Path) -> int:
     else:
         print("  service:  not installed")
 
-    agent = Path.home() / "Library/LaunchAgents" / f"{cfg.boot_label}.plist"
-    print(f"  boot agent: {'installed' if agent.exists() else 'not installed'}")
-
-    if cfg.xcode_manage:
+    if cfg.xcode_manage and snapshot is None:
         try:
             installed = xcode.parse_installed(util.output(["xcodes", "installed"]))
             names = ", ".join(i.identifier for i in installed) or "none"
             print(f"  xcodes:   {names}")
         except SetupError:
             print("  xcodes:   `xcodes` not available yet")
+    return 0
+
+
+def cmd_info(args, repo_root: Path) -> int:
+    """Print current local state without updating tools, services or run records."""
+    cfg = config.load(repo_root)
+    snapshot = inventory.collect(cfg)
+    if args.json:
+        print(json.dumps(snapshot, indent=2))
+        return 1 if snapshot["errors"] else 0
+
+    values = snapshot["comparable"]
+    print(f"Runner setup on {snapshot['host']} (as of {snapshot['captured_at']})")
+    print(f"  checkout: {repo_root}")
+    revision = values.get("setup", {})
+    print(f"  revision: {revision.get('commit', 'unknown')}"
+          f"{' (uncommitted changes)' if revision.get('dirty') else ''}")
+    print(f"  config:   {repo_root / 'config.toml'}")
+    system = values.get("os", {})
+    print(f"  macOS:    {system.get('version', 'unknown')} "
+          f"({system.get('build', 'unknown')}), {system.get('architecture', 'unknown')}")
+    print()
+    try:
+        _print_status(cfg, snapshot)
+    except (SetupError, OSError) as error:
+        snapshot["errors"].append(f"runner status: {error}")
+    print(f"  runner directory: {cfg.runner_dir}")
+    print(f"  restart pending: {'yes' if (cfg.runner_dir / runner._RESTART_MARKER).exists() else 'no'}")
+    print(f"  recovery pending: {'yes' if (util.STATE_DIR / 'maintenance.json').exists() else 'no'}")
+    print(f"Log retention: up to {cfg.log_retention_days} days, {cfg.log_max_bytes} bytes total")
+
+    print("\nHomebrew managed formulae and dependencies:")
+    packages = values.get("homebrew", {})
+    for name, package in sorted(packages.get("formulae", {}).items()):
+        print(f"  {name}: {package['version']}{' [pinned]' if package['pinned'] else ''}")
+    if "homebrew" not in values:
+        print("  unavailable (see incomplete checks below)")
+    for name, version in sorted(packages.get("casks", {}).items()):
+        print(f"  {name} (cask): {version}")
+
+    def xcode_text(value):
+        if value is None:
+            return "none"
+        prerelease = " ".join(str(part) for part in value.get("prerelease", []))
+        return f"{value['version']}{' ' + prerelease if prerelease else ''} ({value['build']})"
+
+    print("\nXcode:")
+    toolchains = values.get("xcodes")
+    if toolchains is None:
+        print("  unavailable (see incomplete checks below)")
+    else:
+        installed = toolchains["installed"]
+        print("  installed: " + (", ".join(xcode_text(item) for item in installed) or "none"
+                                 if installed is not None else "not inventoried (management disabled)"))
+        print(f"  global selection: {xcode_text(toolchains['selected'])}")
+        selected = toolchains["runner"]
+        source = f" via {selected['source']}" if selected else ""
+        print(f"  runner selection: {xcode_text(selected)}{source}")
+    if snapshot["errors"]:
+        print("\nIncomplete checks:")
+        for error in snapshot["errors"]:
+            print(f"  {error}")
+        return 1
     return 0
 
 
@@ -217,7 +291,7 @@ def cmd_compare(args, repo_root: Path) -> int:
     return 0
 
 
-_READ_ONLY = {"status": cmd_status, "logs": cmd_logs, "compare": cmd_compare}
+_READ_ONLY = {"status": cmd_status, "info": cmd_info, "logs": cmd_logs, "compare": cmd_compare}
 _RAW_ARGV: list[str] = []
 
 
@@ -227,12 +301,12 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="setup", description="Maintain a dedicated self-hosted macOS CI runner.")
     parser.add_argument("command", nargs="?", default="converge",
-                        choices=["converge", "update", "status", "logs", "compare", "store-pat", "uninstall"])
+                        choices=["converge", "update", "status", "info", "logs", "compare", "store-pat", "uninstall"])
     parser.add_argument("token", nargs="?", help="PAT for store-pat; snapshot path for compare")
     parser.add_argument("--non-interactive", action="store_true", help="never prompt")
     parser.add_argument("--skip-brew", action="store_true", help="skip Homebrew changes")
     parser.add_argument("--skip-xcode", action="store_true", help="skip the Xcode phase")
-    parser.add_argument("--json", action="store_true", help="export a comparable inventory (status)")
+    parser.add_argument("--json", action="store_true", help="export a comparable inventory (status/info)")
     parser.add_argument("--lines", type=int, default=200, help="number of recent log lines (logs)")
     args = parser.parse_args(argv)
     if args.token and args.command not in ("store-pat", "compare"):
