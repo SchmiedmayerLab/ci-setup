@@ -114,58 +114,77 @@ def cmd_status(args, repo_root: Path) -> int:
     return _print_status(cfg)
 
 
-def _print_status(cfg: config.Config, snapshot: dict | None = None) -> int:
+def _print_field(label: str, value: object, *, width: int = 18) -> None:
+    print(f"  {label + ':':<{width}} {value}")
+
+
+def _print_maintenance(cfg: config.Config) -> None:
+    print("\nMaintenance:")
     previous = util.STATE_DIR / "last-run.json"
     if previous.exists():
         try:
             last = json.loads(previous.read_text())
             if not isinstance(last, dict):
                 raise ValueError("expected a run-summary object")
-            print(f"Last run: {last.get('status', 'unknown')} "
-                  f"(started {last.get('started', 'unknown')}, id {last.get('run_id', 'unknown')})")
+            _print_field("last run", last.get("status", "unknown"))
+            _print_field("started", last.get("started", "unknown"))
+            _print_field("run ID", last.get("run_id", "unknown"))
             for phase in last.get("phases", []):
                 if phase.get("status") not in ("succeeded", "skipped"):
-                    print(f"  {phase['name']}: {phase['status']} — {phase.get('detail', '')}")
+                    detail = phase.get("detail") or "; ".join(phase.get("warnings", []))
+                    _print_field(phase["name"], f"{phase['status']}{' — ' + detail if detail else ''}")
         except (ValueError, OSError) as error:
             warn(f"could not read previous run summary: {error}")
     else:
-        print("Last run: not recorded")
-    print(f"Logs: {runlog.LOG_DIR} (./setup logs)")
-    print(f"{util.BOLD}CI runner status{util.OFF}")
-    print(f"  target:   {cfg.github_url}")
-    print(f"  name:     {cfg.runner_name}")
+        _print_field("last run", "not recorded")
+    _print_field("logs", f"{runlog.LOG_DIR} (./setup logs)")
+    _print_field("log retention", f"up to {cfg.log_retention_days} days, {cfg.log_max_bytes / 1024**2:g} MiB total")
+
+
+def _print_runner_status(cfg: config.Config, snapshot: dict | None = None) -> None:
+    print(f"{util.BOLD}Runner status:{util.OFF}")
+    _print_field("name", cfg.runner_name)
+    _print_field("target", cfg.github_url)
     agent = Path.home() / "Library/LaunchAgents" / f"{cfg.boot_label}.plist"
-    print(f"  boot agent: {'installed' if agent.exists() else 'not installed'}")
+    _print_field("boot agent", "installed" if agent.exists() else "not installed")
+    _print_field("runner directory", cfg.runner_dir)
+    _print_field("restart pending", "yes" if (cfg.runner_dir / runner._RESTART_MARKER).exists() else "no")
+    _print_field("recovery pending", "yes" if (util.STATE_DIR / "maintenance.json").exists() else "no")
 
     if not cfg.runner_dir.exists():
-        print(f"  runner:   not installed ({cfg.runner_dir} missing) — run ./setup")
-        return 0
+        _print_field("runner", f"not installed ({cfg.runner_dir} missing) — run ./setup")
+        return
     if snapshot is None:
         version = runner.installed_version(cfg.runner_dir)
         version_text = util.fmt_version(version) if version else None
     else:
         version_text = snapshot["comparable"].get("runner_version")
-    print(f"  version:  {'v' + version_text if version_text else 'unknown'}")
+    _print_field("version", "v" + version_text if version_text else "unknown")
 
     if runner.is_registered(cfg):
         drift = runner.recorded_state(cfg) != runner.desired_state(cfg)
-        print(f"  registered: yes{' (config drift — run ./setup)' if drift else ''}")
+        _print_field("registered", "yes" + (" (config drift — run ./setup)" if drift else ""))
     else:
-        print("  registered: no — run ./setup")
+        _print_field("registered", "no — run ./setup")
 
     if runner.service_installed(cfg):
         running = runner.service_running(cfg)
-        print(f"  service:  {'running' if running else 'installed, NOT running'}")
+        _print_field("service", "running" if running else "installed, NOT running")
     else:
-        print("  service:  not installed")
+        _print_field("service", "not installed")
 
     if cfg.xcode_manage and snapshot is None:
         try:
             installed = xcode.parse_installed(util.output(["xcodes", "installed"]))
             names = ", ".join(i.identifier for i in installed) or "none"
-            print(f"  xcodes:   {names}")
+            _print_field("xcodes", names)
         except SetupError:
-            print("  xcodes:   `xcodes` not available yet")
+            _print_field("xcodes", "`xcodes` not available yet")
+
+
+def _print_status(cfg: config.Config, snapshot: dict | None = None) -> int:
+    _print_runner_status(cfg, snapshot)
+    _print_maintenance(cfg)
     return 0
 
 
@@ -189,13 +208,10 @@ def cmd_info(args, repo_root: Path) -> int:
           f"({system.get('build', 'unknown')}), {system.get('architecture', 'unknown')}")
     print()
     try:
-        _print_status(cfg, snapshot)
+        _print_runner_status(cfg, snapshot)
     except (SetupError, OSError) as error:
         snapshot["errors"].append(f"runner status: {error}")
-    print(f"  runner directory: {cfg.runner_dir}")
-    print(f"  restart pending: {'yes' if (cfg.runner_dir / runner._RESTART_MARKER).exists() else 'no'}")
-    print(f"  recovery pending: {'yes' if (util.STATE_DIR / 'maintenance.json').exists() else 'no'}")
-    print(f"Log retention: up to {cfg.log_retention_days} days, {cfg.log_max_bytes} bytes total")
+    _print_maintenance(cfg)
 
     def xcode_text(value):
         if value is None:
@@ -209,12 +225,12 @@ def cmd_info(args, repo_root: Path) -> int:
         print("  unavailable (see incomplete checks below)")
     else:
         installed = toolchains["installed"]
-        print("  installed: " + (", ".join(xcode_text(item) for item in installed) or "none"
-                                 if installed is not None else "not inventoried (management disabled)"))
-        print(f"  global selection: {xcode_text(toolchains['selected'])}")
+        _print_field("installed", (", ".join(xcode_text(item) for item in installed) or "none"
+                                   if installed is not None else "not inventoried (management disabled)"))
+        _print_field("global selection", xcode_text(toolchains["selected"]))
         selected = toolchains["runner"]
         source = f" via {selected['source']}" if selected else ""
-        print(f"  runner selection: {xcode_text(selected)}{source}")
+        _print_field("runner selection", f"{xcode_text(selected)}{source}")
     if snapshot["errors"]:
         print("\nIncomplete checks:")
         for error in snapshot["errors"]:
@@ -222,12 +238,14 @@ def cmd_info(args, repo_root: Path) -> int:
 
     print("\nManaged tools (Homebrew):")
     packages = values.get("homebrew", {})
+    labels = list(packages.get("formulae", {})) + [f"{name} (cask)" for name in packages.get("casks", {})]
+    width = max((len(label) + 1 for label in labels), default=0)
     for name, package in sorted(packages.get("formulae", {}).items()):
-        print(f"  {name}: {package['version']}{' [pinned]' if package['pinned'] else ''}")
+        _print_field(name, f"{package['version']}{' [pinned]' if package['pinned'] else ''}", width=width)
     if "homebrew" not in values:
         print("  unavailable (see incomplete checks above)")
     for name, version in sorted(packages.get("casks", {}).items()):
-        print(f"  {name} (cask): {version}")
+        _print_field(f"{name} (cask)", version, width=width)
     return 1 if snapshot["errors"] else 0
 
 

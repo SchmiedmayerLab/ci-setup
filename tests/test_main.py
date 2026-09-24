@@ -385,11 +385,11 @@ class MainTests(unittest.TestCase):
             },
         }
         self.assertEqual(main.main(["info", "--non-interactive"]), 0)
-        output = self.stdout.getvalue()
+        output = " ".join(self.stdout.getvalue().split())
         for expected in ("example-runner", "abcdef123 (uncommitted changes)", "27.0 (26A428), arm64",
                          "v2.337.0", "node: 26.9.0 [pinned]", "firebase-cli: 15.30.2",
                          "27.0 beta 2 (18A1)", "global selection: 26.6 (17F42)",
-                         "runner selection: 26.5 (17E1) via DEVELOPER_DIR", "Last run: not recorded"):
+                         "runner selection: 26.5 (17E1) via DEVELOPER_DIR", "last run: not recorded"):
             self.assertIn(expected, output)
         self.assert_read_only()
 
@@ -401,8 +401,8 @@ class MainTests(unittest.TestCase):
             "errors": ["homebrew: command not found: brew", "xcodes: unavailable"],
         }
         self.assertEqual(main.main(["info"]), 1)
-        output = self.stdout.getvalue()
-        for expected in ("abcdef123", "runner:   not installed", "boot agent: not installed",
+        output = " ".join(self.stdout.getvalue().split())
+        for expected in ("abcdef123", "runner: not installed", "boot agent: not installed",
                          "Managed tools (Homebrew)", "Xcode:", "Incomplete checks:",
                          "homebrew: command not found: brew"):
             self.assertIn(expected, output)
