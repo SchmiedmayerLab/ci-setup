@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import boot, brew, config, inventory, maintenance, power, runner, runlog, update, util, xcode
+from . import adoption, boot, brew, config, inventory, legacy, maintenance, power, runner, runlog, update, util, xcode
 from .report import RunReport
 from .util import SetupError, err, log, ok, warn
 
@@ -32,6 +32,14 @@ class Restart(BaseException):
 def cmd_converge(args, cfg: config.Config, report: RunReport) -> int:
     python_changed = False
     with maintenance.paused(cfg) as pause:
+        if args.command == "adopt":
+            # Persist the identity before any interpreter/source restart. Both
+            # operations must succeed before changing this legacy installation.
+            if report.phase("runner adoption", lambda: adoption.save(cfg)).error:
+                return 1
+        if cfg.adopted_registration:
+            if report.phase("legacy Homebrew schedule", legacy.retire_homebrew_autoupdate).error:
+                return 1
         should_update = args.command == "update" or args.non_interactive
         if should_update and not os.environ.get("CI_SETUP_UPDATED"):
             result = report.phase("self-update", lambda: update.pull(cfg.repo_root))
@@ -42,10 +50,10 @@ def cmd_converge(args, cfg: config.Config, report: RunReport) -> int:
                 pause.handoff()
                 raise Restart(dict(os.environ, CI_SETUP_UPDATED="1"))
 
-        cfg.pat = config.resolve_pat(cfg)
+        cfg.pat = None if cfg.adopted_registration else config.resolve_pat(cfg)
         runlog.register_secret(cfg.pat)
         (Path.home() / "Library/LaunchAgents").mkdir(parents=True, exist_ok=True)
-        if not cfg.pat and not util.INTERACTIVE:
+        if not cfg.pat and not util.INTERACTIVE and not cfg.adopted_registration:
             warn("no GitHub PAT available; existing registration can be retained")
 
         result = report.phase("homebrew", brew.probe if args.skip_brew else lambda: brew.ensure(cfg))
@@ -162,8 +170,10 @@ def _print_runner_status(cfg: config.Config, snapshot: dict | None = None) -> No
     _print_field("version", "v" + version_text if version_text else "unknown")
 
     if runner.is_registered(cfg):
-        drift = runner.recorded_state(cfg) != runner.desired_state(cfg)
+        drift = not runner.registration_matches(cfg)
         _print_field("registered", "yes" + (" (config drift — run ./setup)" if drift else ""))
+        if cfg.adopted_registration:
+            _print_field("registration", "adopted; existing GitHub labels and identity preserved")
     else:
         _print_field("registered", "no — run ./setup")
 
@@ -318,16 +328,18 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="setup", description="Maintain a dedicated self-hosted macOS CI runner.")
     parser.add_argument("command", nargs="?", default="converge",
-                        choices=["converge", "update", "status", "info", "logs", "compare", "store-pat", "uninstall"])
-    parser.add_argument("token", nargs="?", help="PAT for store-pat; snapshot path for compare")
+                        choices=["converge", "update", "adopt", "status", "info", "logs", "compare", "store-pat", "uninstall"])
+    parser.add_argument("token", nargs="?", help="PAT for store-pat; snapshot path for compare; existing runner directory for adopt")
     parser.add_argument("--non-interactive", action="store_true", help="never prompt")
     parser.add_argument("--skip-brew", action="store_true", help="skip Homebrew changes")
     parser.add_argument("--skip-xcode", action="store_true", help="skip the Xcode phase")
     parser.add_argument("--json", action="store_true", help="export a comparable inventory (status/info)")
     parser.add_argument("--lines", type=int, default=200, help="number of recent log lines (logs)")
     args = parser.parse_args(argv)
-    if args.token and args.command not in ("store-pat", "compare"):
+    if args.token and args.command not in ("store-pat", "compare", "adopt"):
         parser.error("unexpected extra argument")
+    if args.command == "adopt" and not args.token:
+        parser.error("adopt requires the existing runner directory (for example ~/runner)")
     util.INTERACTIVE = not args.non_interactive and sys.stdin.isatty()
     util.WARNINGS.clear()
     repo_root = Path(__file__).resolve().parent.parent
@@ -358,6 +370,8 @@ def main(argv: list[str]) -> int:
         config_error = None
         try:
             cfg = config.load(repo_root)
+            if args.command == "adopt":
+                cfg = adoption.prepare(cfg, Path(args.token).expanduser())
         except SetupError as error:
             config_error = error
         with runlog.RunLog(

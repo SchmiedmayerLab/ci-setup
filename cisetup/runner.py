@@ -271,6 +271,18 @@ def recorded_state(cfg: Config) -> dict | None:
         return None
 
 
+def registration_matches(cfg: Config) -> bool:
+    """Whether the managed policy or explicitly adopted identity is intact."""
+    if cfg.adopted_registration is not None:
+        from . import adoption
+        try:
+            adoption.validate(cfg)
+        except SetupError:
+            return False
+        return True
+    return is_registered(cfg) and recorded_state(cfg) == desired_state(cfg)
+
+
 def _registration_token(cfg: Config) -> str:
     if cfg.pat:
         return github_api.registration_token(cfg)
@@ -338,7 +350,14 @@ def deregister(cfg: Config) -> None:
 
 
 def ensure_registered(cfg: Config) -> None:
-    if is_registered(cfg) and recorded_state(cfg) == desired_state(cfg):
+    if cfg.adopted_registration is not None:
+        from . import adoption
+        # Never fall through to token acquisition or re-registration, even if
+        # a PAT is available. Adoption promises to preserve this identity.
+        adoption.validate(cfg)
+        ok(f"adopted runner '{cfg.runner_name}' registration preserved (existing labels/group retained)")
+        return
+    if registration_matches(cfg):
         ok(f"runner '{cfg.runner_name}' registered with {cfg.github_url}")
         return
     if is_registered(cfg):

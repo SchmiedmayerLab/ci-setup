@@ -135,6 +135,16 @@ def collect(cfg: Config, *, include_homebrew_dependencies: bool = True) -> dict:
     snapshot = {"schema_version": SCHEMA_VERSION, "host": socket.gethostname(),
                 "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "comparable": {}, "errors": []}
+    # Identity belongs outside the comparable environment: two distinct
+    # runners can share a hostname and still have identical toolchains.
+    snapshot["runner"] = {
+        "name": cfg.runner_name, "directory": str(cfg.runner_dir),
+        "github_url": cfg.github_url, "work_directory": cfg.work_dir,
+        "registration_mode": "adopted" if cfg.adopted_registration else "managed",
+    }
+    if cfg.adopted_registration:
+        snapshot["runner"]["adopted_registration"] = cfg.adopted_registration["registration"]
+        snapshot["runner"]["labels"] = "existing GitHub labels preserved; not queried"
 
     def probe(name, read):
         try:

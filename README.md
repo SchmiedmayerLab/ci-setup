@@ -93,6 +93,52 @@ running and the latest maintenance result.
 
 ## How re-running works (idempotency)
 
+### Migrating an existing runner without GitHub tokens
+
+For an existing installation such as `StanfordBDHG/ContinuousIntegration`,
+clone this repository into a separate `~/ci-setup` directory on the runner
+VM. Keep the existing runner directory and registration intact. Once the
+desired branch is checked out, run as the same logged-in runner user:
+
+```sh
+cd ~/ci-setup
+./setup adopt ~/runner --skip-xcode
+./setup info
+```
+
+`adopt` validates that the existing runner belongs to the configured GitHub
+organization/repository, waits for no jobs by deferring busy maintenance,
+pauses intake, and runs the regular maintenance phases. `--skip-xcode`
+retains the current Xcode during the migration; a later `./setup update`
+can install newer releases and request Apple authentication if necessary.
+Adoption needs an existing Python 3.11+ and does not bootstrap tools before
+validating the registration and pausing intake.
+
+The runner's ID, name, group, existing GitHub labels, credentials, directory,
+and working folder are preserved. Neither a GitHub PAT nor registration or
+removal tokens are needed. The new cleanup hooks use the existing working
+folder. Duplicate machine hostnames do not change the preserved runner names.
+The known legacy Homebrew autoupdate LaunchAgent is retired before tool
+changes, so updates are owned by this setup's maintenance schedule. If the
+legacy updater is executing, adoption stops before changing packages; let it
+finish and retry. Unexpected legacy agent definitions require manual review.
+
+Adoption metadata is stored in
+`~/Library/Application Support/ci-runner-setup/adopted-runner.json`, outside
+the Git checkout. Keep `config.toml` unmodified so future self-updates and
+switching the checkout to `main` work normally. Existing labels are preserved,
+not reconciled with `runner.labels`. Subsequent registration-policy changes
+or unexpected local identity changes fail without implicit re-registration;
+review such a change as a separate migration.
+
+The retired Homebrew plist is kept under the setup state directory's `legacy`
+folder. Restoring that updater requires enabling its launchd label as well as
+restoring/loading the archived plist; first stop the new maintenance agent
+to avoid competing schedules. Adoption does not delete the old installer,
+old cleanup scripts, or any credential files.
+
+### Regular maintenance
+
 `./setup` (command `converge`, the default) converges every phase and
 skips whatever is already correct:
 
@@ -173,6 +219,7 @@ active agent requires a subsequent manual converge to unload its old schedule.
 ```sh
 ./setup                # converge (default)
 ./setup update         # fast-forward source, restart if changed, converge/reload boot agent
+./setup adopt ~/runner # preserve an existing registration and migrate maintenance
 ./setup status         # show runner/service/Xcode state
 ./setup info           # current setup revision, services, tool versions/pins and Xcode selections
 ./setup info --json    # same comparable inventory as status --json

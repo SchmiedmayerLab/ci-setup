@@ -74,6 +74,9 @@ class MainTests(unittest.TestCase):
         self.patch("cisetup.runlog.LOG_DIR", new=self.root / "logs")
         self.load = self.patch("cisetup.config.load", return_value=self.cfg)
         self.resolve_pat = self.patch("cisetup.config.resolve_pat", return_value="test-pat")
+        self.prepare_adoption = self.patch("cisetup.adoption.prepare", return_value=self.cfg)
+        self.save_adoption = self.patch("cisetup.adoption.save")
+        self.retire_legacy = self.patch("cisetup.legacy.retire_homebrew_autoupdate")
         self.patch("cisetup.runlog.register_secret")
         self.acquire = self.patch("cisetup.util.acquire_lock", return_value=None)
         self.release = self.patch("cisetup.util.release_lock")
@@ -165,6 +168,47 @@ class MainTests(unittest.TestCase):
         self.start.assert_not_called()
         self.assertEqual(self.events, ["pause", "restore"])
         self.assertEqual(next(p for p in self.report.data["phases"] if p["name"] == "homebrew")["status"], "failed")
+
+    def test_adoption_preserves_identity_inside_pause_without_keychain_lookup(self):
+        self.cfg.adopted_registration = {"version": 1}
+        self.save_adoption.side_effect = lambda cfg: self.assertTrue(self.in_maintenance)
+        self.retire_legacy.side_effect = lambda: self.assertTrue(self.in_maintenance)
+        self.assertEqual(main.main(["adopt", str(self.cfg.runner_dir), "--skip-xcode"]), 0)
+        self.prepare_adoption.assert_called_once_with(self.cfg, self.cfg.runner_dir)
+        self.save_adoption.assert_called_once_with(self.cfg)
+        self.retire_legacy.assert_called_once()
+        self.resolve_pat.assert_not_called()
+        self.xcode.assert_not_called()
+        self.register.assert_called_once_with(self.cfg)
+        self.assertLess(self.events.index("restore"), self.events.index("log-closed"))
+        self.assertFalse(self.in_maintenance)
+
+    def test_busy_adoption_does_not_write_state_or_retire_scheduler(self):
+        self.cfg.adopted_registration = {"version": 1}
+        self.pause.side_effect = MaintenanceDeferred("a worker is running")
+        self.assertEqual(main.main(["adopt", str(self.cfg.runner_dir)]), 2)
+        self.save_adoption.assert_not_called()
+        self.retire_legacy.assert_not_called()
+        for operation in self.mutations:
+            operation.assert_not_called()
+
+    def test_failed_adoption_state_write_stops_before_tool_changes(self):
+        self.args.command = "adopt"
+        self.cfg.adopted_registration = {"version": 1}
+        self.save_adoption.side_effect = SetupError("disk full")
+        self.assertEqual(self.converge(), 1)
+        self.retire_legacy.assert_not_called()
+        self.brew.assert_not_called()
+        self.resolve_pat.assert_not_called()
+        self.assertEqual(self.events, ["pause", "restore"])
+
+    def test_adopted_runner_always_checks_legacy_scheduler_before_maintenance(self):
+        self.cfg.adopted_registration = {"version": 1}
+        self.retire_legacy.side_effect = SetupError("legacy updater still running")
+        self.assertEqual(self.converge(), 1)
+        self.brew.assert_not_called()
+        self.register.assert_not_called()
+        self.assertEqual(self.events, ["pause", "restore"])
 
     def test_homebrew_without_paths_falls_back_to_existing_paths(self):
         self.brew.side_effect = SetupError("metadata unavailable")

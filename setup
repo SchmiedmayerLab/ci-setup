@@ -19,6 +19,7 @@
 #   ./setup status                 show current state
 #   ./setup info                   summarize setup, services and tool versions
 #   ./setup update                 fast-forward this checkout, then converge
+#   ./setup adopt ~/runner         maintain an existing runner without re-registering
 #   ./setup logs                   show recent maintenance output
 #   ./setup status --json          export a comparable runner inventory
 #   ./setup compare snapshot.json  compare with another runner's inventory
@@ -112,12 +113,13 @@ EOF
   exit 0
 fi
 
-# Read-only commands must never bootstrap this machine. Only use an already
-# installed modern interpreter, and let Python report missing tooling.
+# Inspection and legacy adoption must not bootstrap before validation and
+# pausing intake. Use an existing modern interpreter; adoption installs any
+# missing managed packages later, inside the Python maintenance guard.
 READ_ONLY=0
 for arg in "$@"; do
   case "$arg" in
-    status|info|logs|compare|--help|-h) READ_ONLY=1 ;;
+    status|info|logs|compare|adopt|--help|-h) READ_ONLY=1 ;;
   esac
 done
 if (( READ_ONLY )); then
@@ -127,7 +129,7 @@ if (( READ_ONLY )); then
       exec "$candidate" "$SCRIPT_DIR/bin/ci-setup" "$@"
     fi
   done
-  fail "Python 3.11+ is needed to inspect setup; no changes were made"
+  fail "Python 3.11+ is needed for inspection/adoption; no changes were made"
 fi
 
 # launchd's fallback only covers the latest bootstrap attempt. Python captures

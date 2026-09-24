@@ -42,6 +42,8 @@ class Config:
     work_dir: str = "_work.noindex"
     group: str | None = None
     cleanup_hooks: bool = True
+    # Explicitly adopted legacy registration; metadata only, never credentials.
+    adopted_registration: dict | None = None
 
     # [xcode]
     xcode_manage: bool = True
@@ -198,7 +200,10 @@ def load(repo_root: Path) -> Config:
         "spotlight.noindex_paths",
     )
 
-    return cfg
+    # Keep machine-specific legacy paths/identity outside the Git checkout so
+    # adopting an existing runner does not prevent subsequent source updates.
+    from . import adoption
+    return adoption.apply(cfg)
 
 
 def resolve_pat(cfg: Config) -> str | None:
