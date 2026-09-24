@@ -258,6 +258,42 @@ class ProcessCleanupTests(unittest.TestCase):
             output = self.run_with_terminal(driver, b"\x03", directory=directory)
             self.assertIn("interrupted; terminal restored", output)
 
+    def test_stdio_prompt_without_explicit_flush_is_visible_before_input(self):
+        """Swift readLine uses stdio; unlike Python input it need not flush a pipe."""
+        import tempfile
+        import textwrap
+
+        child = textwrap.dedent("""
+            import ctypes,sys
+            libc=ctypes.CDLL(None)
+            symbol='__stdinp' if sys.platform=='darwin' else 'stdin'
+            stdin=ctypes.c_void_p.in_dll(libc,symbol)
+            libc.fgets.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_void_p]
+            libc.fgets.restype=ctypes.c_void_p
+            buffer=ctypes.create_string_buffer(100)
+            libc.printf(b'PROMPT_READY: ')
+            assert libc.fgets(buffer,len(buffer),stdin)
+            assert buffer.value.strip()==b'synthetic-secret-answer'
+            libc.puts(b'accepted')
+            libc.fflush(None)
+        """)
+        driver = textwrap.dedent("""
+            import os,sys
+            from pathlib import Path
+            from cisetup import util,runlog
+            util.INTERACTIVE=True
+            with runlog.RunLog('stdio-prompt-test',directory=Path('logs')):
+                util.run([sys.executable,'-c',CHILD],timeout=2)
+                assert os.tcgetpgrp(0)==os.getpgrp()
+                print('terminal restored',flush=True)
+        """).replace("CHILD",repr(child))
+        with tempfile.TemporaryDirectory() as directory:
+            output = self.run_with_terminal(driver,b"synthetic-secret-answer\n",directory=directory)
+            self.assertIn("accepted",output)
+            text = "".join(path.read_text() for path in (pathlib.Path(directory)/"logs").glob("*.log"))
+            self.assertIn("PROMPT_READY",text)
+            self.assertNotIn("synthetic-secret-answer",text,"stdin echo must not enter the output log")
+
 
 class WatchdogTests(unittest.TestCase):
     """Only launch synthetic Python children, never installed CI tools."""

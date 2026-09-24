@@ -15,14 +15,17 @@ boundary and close it before exec. Stdin is never inspected or redirected.
 from __future__ import annotations
 
 import codecs
+import errno
 import fcntl
 import os
 import re
 import selectors
 import stat
 import sys
+import termios
 import threading
 import time
+import tty
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -172,6 +175,7 @@ class RunLog:
         self._exit_code = 0
         self._saved: dict[int, int] = {}
         self._readers: dict[int, int] = {}
+        self._pty_readers: set[int] = set()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._error: Exception | None = None
@@ -233,10 +237,24 @@ class RunLog:
                     stream.reconfigure(line_buffering=True, write_through=True)
             for target in (1, 2):
                 self._saved[target] = os.dup(target)
-                reader, writer = os.pipe()
+                terminal_output = self.console and os.isatty(self._saved[target])
+                reader, writer = os.openpty() if terminal_output else os.pipe()
                 self._readers[target] = reader
-                os.set_blocking(reader, False)
                 try:
+                    if terminal_output:
+                        self._pty_readers.add(reader)
+                        # Keep child stdout/stderr terminal-backed. libc then
+                        # flushes pending prompts before a terminal stdin read,
+                        # instead of buffering them while the user waits.
+                        # These PTYs carry OUTPUT ONLY: stdin and the controlling
+                        # terminal stay untouched, and nothing writes the master.
+                        tty.setraw(writer)
+                        try:
+                            size = fcntl.ioctl(self._saved[target], termios.TIOCGWINSZ, b"\0" * 8)
+                            fcntl.ioctl(writer, termios.TIOCSWINSZ, size)
+                        except OSError:
+                            pass  # A terminal with no reported size is usable.
+                    os.set_blocking(reader, False)
                     os.dup2(writer, target)
                 finally:
                     os.close(writer)
@@ -300,6 +318,12 @@ class RunLog:
                         data = os.read(key.fd, 32_768)
                     except BlockingIOError:
                         continue
+                    except OSError as error:
+                        # Some PTY implementations signal the slave's closure
+                        # with EIO rather than a zero-byte EOF read.
+                        if key.fd not in self._pty_readers or error.errno != errno.EIO:
+                            raise
+                        data = b""
                     if not data:
                         selector.unregister(key.fd)
                     else:
