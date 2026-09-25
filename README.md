@@ -226,7 +226,7 @@ active agent requires a subsequent manual converge to unload its old schedule.
 ./setup                # converge (default)
 ./setup update         # fast-forward source, restart if changed, converge/reload boot agent
 ./setup adopt ~/runner # preserve an existing registration and migrate maintenance
-./setup status         # show runner/service/Xcode state
+./setup status         # show runner/service/Xcode state and current job
 ./setup info           # current setup revision, services, tool versions/pins and Xcode selections
 ./setup info --json    # same comparable inventory as status --json
 ./setup logs --lines 200 # recent timestamped maintenance output
@@ -253,6 +253,19 @@ retains the full dependency inventory for comparisons. It does not update
 packages, authenticate, restart services,
 or write maintenance state. Unavailable probes are listed as incomplete and
 return exit code 1 while the remaining information is still displayed.
+
+Both `status` and `info` show local activity (busy, idle, paused, or offline).
+While busy, they show the current job's name, repository, workflow, ref, start
+time, elapsed time and GitHub run link when available. This uses the live
+worker's open diagnostic log, works with existing jobs, and needs no GitHub
+credentials or new hooks. Idle means a local listener is running without a
+worker; it does not verify GitHub connectivity. Job start/elapsed time measures
+local job receipt, including preparation and cleanup, rather than queue time.
+If the log has rotated, is unreadable, exceeds 8 MiB or lacks usable metadata,
+activity remains busy with job details unavailable. Historical jobs are never
+used as a fallback. JSON includes this under `runner.activity`, outside the
+toolchain comparison, and exports only selected job metadata, never the full
+job payload or environment.
 
 ## Logs and keeping runners in sync
 

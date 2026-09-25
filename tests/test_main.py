@@ -98,6 +98,7 @@ class MainTests(unittest.TestCase):
         self.start = self.patch("cisetup.runner.ensure_service")
         self.patch("cisetup.runner.is_registered", return_value=True)
         self.patch("cisetup.runner.service_running", return_value=False)
+        self.activity = self.patch("cisetup.activity.collect", return_value={"state": "idle", "workers": []})
         self.boot = self.patch("cisetup.boot.ensure")
         self.spotlight = self.patch("cisetup.power.ensure_spotlight_exclusions")
         self.power = self.patch("cisetup.power.ensure")
@@ -402,7 +403,8 @@ class MainTests(unittest.TestCase):
         self.assertEqual(next(p for p in summary["phases"] if p["name"] == "Xcode")["status"], "interrupted")
 
     def test_readonly_json_status_does_not_log_lock_update_or_mutate(self):
-        snapshot = {"schema_version": 1, "host": "test", "comparable": {}, "errors": []}
+        snapshot = {"schema_version": 1, "host": "test", "comparable": {}, "errors": [],
+                    "runner": {"activity": {"state": "busy", "workers": [{"pid": 321, "job": {"name": "Build"}}]}}}
         self.inventory.return_value = snapshot
         for command in ("status", "info"):
             with self.subTest(command=command):
@@ -411,6 +413,38 @@ class MainTests(unittest.TestCase):
                 self.assertEqual(main.main([command, "--json", "--non-interactive"]), 0)
                 self.assertEqual(json.loads(self.stdout.getvalue()), snapshot)
                 self.assert_read_only()
+
+    def test_info_and_status_show_aligned_current_job_without_mutating(self):
+        value = {"state": "busy", "workers": [{"pid": 321, "job": {
+            "name": "Build (macOS)", "repository": "test-org/project", "workflow": "Tests",
+            "ref": "refs/heads/main", "started_at": "2026-09-25T10:00:00+00:00", "elapsed_seconds": 3723,
+            "url": "https://github.com/test-org/project/actions/runs/123/attempts/2",
+        }}]}
+        self.activity.return_value = value
+        self.inventory.return_value = {"host": "test", "captured_at": "now", "errors": [],
+                                       "comparable": {}, "runner": {"activity": value}}
+        self.patch("cisetup.runner.installed_version", return_value=(2, 337, 0))
+        self.cfg.xcode_manage = False
+        for command in ("info", "status"):
+            with self.subTest(command=command):
+                self.stdout.seek(0)
+                self.stdout.truncate()
+                self.assertEqual(main.main([command]), 0)
+                lines = self.stdout.getvalue().splitlines()
+                for label, expected in (("activity", "busy"), ("current job", "Build (macOS)"),
+                                        ("repository", "test-org/project"), ("workflow", "Tests"),
+                                        ("elapsed", "1h 02m 03s"), ("run", value["workers"][0]["job"]["url"])):
+                    self.assertIn(f"  {label + ':':<18} {expected}", lines)
+                self.assert_read_only()
+
+    def test_status_reports_unknown_when_activity_probe_fails(self):
+        self.activity.return_value = {"state": "unknown", "error": "process probe unavailable", "workers": []}
+        self.patch("cisetup.runner.installed_version", return_value=(2, 337, 0))
+        self.cfg.xcode_manage = False
+        self.assertEqual(main.main(["status"]), 1)
+        self.assertIn("process probe unavailable", self.stdout.getvalue())
+        self.assertIn("Maintenance:", self.stdout.getvalue())
+        self.assert_read_only()
 
     def test_info_reports_actual_versions_pins_and_distinct_xcode_selections(self):
         self.inventory.return_value = {

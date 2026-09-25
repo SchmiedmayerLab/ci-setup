@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import adoption, boot, brew, config, inventory, legacy, maintenance, power, runner, runlog, update, util, xcode
+from . import activity, adoption, boot, brew, config, inventory, legacy, maintenance, power, runner, runlog, update, util, xcode
 from .report import RunReport
 from .util import SetupError, err, log, ok, warn
 
@@ -149,10 +149,35 @@ def _print_maintenance(cfg: config.Config) -> None:
     _print_field("log retention", f"up to {cfg.log_retention_days} days, {cfg.log_max_bytes / 1024**2:g} MiB total")
 
 
-def _print_runner_status(cfg: config.Config, snapshot: dict | None = None) -> None:
+def _print_activity(value: dict) -> None:
+    descriptions = {"busy": "busy", "idle": "idle (local listener running)",
+                    "offline": "offline (no local runner process)", "paused": "paused", "unknown": "unknown"}
+    _print_field("activity", descriptions.get(value["state"], "unknown"))
+    if value.get("error"):
+        _print_field("activity error", value["error"])
+    for worker in value.get("workers", []):
+        job = worker.get("job", {})
+        _print_field("current job", job.get("name", job.get("key", "details unavailable")))
+        _print_field("worker PID", worker["pid"])
+        for key, label in (("repository", "repository"), ("workflow", "workflow"),
+                           ("ref", "ref"), ("started_at", "job started")):
+            if job.get(key):
+                _print_field(label, job[key])
+        if "elapsed_seconds" in job:
+            minutes, seconds = divmod(job["elapsed_seconds"], 60)
+            hours, minutes = divmod(minutes, 60)
+            _print_field("elapsed", f"{hours}h {minutes:02}m {seconds:02}s" if hours else f"{minutes}m {seconds:02}s")
+        if job.get("url"):
+            _print_field("run", job["url"])
+
+
+def _print_runner_status(cfg: config.Config, snapshot: dict | None = None) -> dict:
     print(f"{util.BOLD}Runner status:{util.OFF}")
     _print_field("name", cfg.runner_name)
     _print_field("target", cfg.github_url)
+    current = (activity.collect(cfg) if snapshot is None else
+               snapshot.get("runner", {}).get("activity", {"state": "unknown"}))
+    _print_activity(current)
     agent = Path.home() / "Library/LaunchAgents" / f"{cfg.boot_label}.plist"
     _print_field("boot agent", "installed" if agent.exists() else "not installed")
     _print_field("runner directory", cfg.runner_dir)
@@ -161,7 +186,7 @@ def _print_runner_status(cfg: config.Config, snapshot: dict | None = None) -> No
 
     if not cfg.runner_dir.exists():
         _print_field("runner", f"not installed ({cfg.runner_dir} missing) — run ./setup")
-        return
+        return current
     if snapshot is None:
         version = runner.installed_version(cfg.runner_dir)
         version_text = util.fmt_version(version) if version else None
@@ -190,12 +215,13 @@ def _print_runner_status(cfg: config.Config, snapshot: dict | None = None) -> No
             _print_field("xcodes", names)
         except SetupError:
             _print_field("xcodes", "`xcodes` not available yet")
+    return current
 
 
 def _print_status(cfg: config.Config, snapshot: dict | None = None) -> int:
-    _print_runner_status(cfg, snapshot)
+    current = _print_runner_status(cfg, snapshot)
     _print_maintenance(cfg)
-    return 0
+    return 1 if current.get("error") else 0
 
 
 def cmd_info(args, repo_root: Path) -> int:

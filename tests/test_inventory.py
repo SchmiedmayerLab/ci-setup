@@ -49,6 +49,7 @@ class InventoryTests(unittest.TestCase):
         (self.cfg.runner_dir / ".env").write_text(f"DEVELOPER_DIR={self.selected}\nTOKEN=never-copy-this-secret\n")
         self.output = self.patch("output", side_effect=self.command)
         self.patch("runner.installed_version", return_value=(2, 337, 0))
+        self.activity = self.patch("activity.collect", return_value={"state": "idle", "workers": []})
         self.patch("brew.FORMULAE", new=["node", "python3"])
         self.patch("brew.CASKS", new=[])
         self.patch("platform.machine", return_value="arm64")
@@ -112,6 +113,19 @@ class InventoryTests(unittest.TestCase):
         second = inventory.collect(self.cfg)
         second.update(host="runner-two", captured_at="different time")
         self.assertEqual(inventory.differences(first, second), [])
+
+    def test_current_jobs_are_exported_without_causing_toolchain_drift(self):
+        first = inventory.collect(self.cfg)
+        self.activity.return_value = {"state": "busy", "workers": [{"pid": 123, "job": {"name": "Build"}}]}
+        second = inventory.collect(self.cfg)
+        self.assertEqual(second["runner"]["activity"], self.activity.return_value)
+        self.assertEqual(inventory.differences(first, second), [])
+
+    def test_failed_activity_probe_keeps_tool_inventory_but_reports_incomplete(self):
+        self.activity.return_value = {"state": "unknown", "error": "cannot inspect processes", "workers": []}
+        snapshot = inventory.collect(self.cfg)
+        self.assertIn("runner activity: cannot inspect processes", snapshot["errors"])
+        self.assertIn("homebrew", snapshot["comparable"])
 
     def test_runner_override_drift_is_detected_with_unchanged_global_selection(self):
         first = inventory.collect(self.cfg)

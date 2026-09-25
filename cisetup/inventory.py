@@ -20,7 +20,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import brew, runner, xcode
+from . import activity, brew, runner, xcode
 from .config import Config
 from .util import SetupError, fmt_version, output
 
@@ -145,6 +145,9 @@ def collect(cfg: Config, *, include_homebrew_dependencies: bool = True) -> dict:
     if cfg.adopted_registration:
         snapshot["runner"]["adopted_registration"] = cfg.adopted_registration["registration"]
         snapshot["runner"]["labels"] = "existing GitHub labels preserved; not queried"
+    snapshot["runner"]["activity"] = activity.collect(cfg)
+    if error := snapshot["runner"]["activity"].get("error"):
+        snapshot["errors"].append(f"runner activity: {error}")
 
     def probe(name, read):
         try:
