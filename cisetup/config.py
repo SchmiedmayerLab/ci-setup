@@ -42,6 +42,8 @@ class Config:
     work_dir: str = "_work.noindex"
     group: str | None = None
     cleanup_hooks: bool = True
+    # Explicitly adopted legacy registration; metadata only, never credentials.
+    adopted_registration: dict | None = None
 
     # [xcode]
     xcode_manage: bool = True
@@ -55,6 +57,10 @@ class Config:
     # [boot]
     boot_install: bool = True
     boot_label: str = "com.selfhosted-runner.setup"
+
+    # [logging]
+    log_retention_days: int = 30
+    log_max_bytes: int = 50 * 1024 * 1024
 
     # [power]
     power_manage: bool = False
@@ -102,6 +108,13 @@ def _str(table: dict, key: str, where: str, default: str = "") -> str:
     return raw.strip()
 
 
+def _positive_int(table: dict, key: str, default: int) -> int:
+    value = table.get(key, default)
+    if type(value) is not int or value <= 0:
+        raise SetupError(f"config.toml: logging.{key} must be a positive integer")
+    return value
+
+
 def load(repo_root: Path) -> Config:
     path = repo_root / "config.toml"
     if not path.exists():
@@ -113,6 +126,10 @@ def load(repo_root: Path) -> Config:
         data = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as e:
         raise SetupError(f"config.toml is not valid TOML: {e}") from e
+
+    for name in ("github", "runner", "xcode", "brew", "boot", "power", "logging", "spotlight"):
+        if name in data and not isinstance(data[name], dict):
+            raise SetupError(f"config.toml: {name} must be a table")
 
     gh = data.get("github", {})
     runner = data.get("runner", {})
@@ -169,6 +186,12 @@ def load(repo_root: Path) -> Config:
     cfg.boot_install = bool(boot.get("install_agent", True))
     cfg.boot_label = _str(boot, "label", "boot.label", "com.selfhosted-runner.setup")
 
+    logging = data.get("logging", {})
+    cfg.log_retention_days = _positive_int(logging, "retention_days", 30)
+    cfg.log_max_bytes = _positive_int(logging, "max_bytes", 50 * 1024 * 1024)
+    if cfg.log_max_bytes < 1024:
+        raise SetupError("config.toml: logging.max_bytes must be at least 1024")
+
     cfg.power_manage = bool(power.get("manage", False))
 
     spotlight = data.get("spotlight", {})
@@ -177,7 +200,10 @@ def load(repo_root: Path) -> Config:
         "spotlight.noindex_paths",
     )
 
-    return cfg
+    # Keep machine-specific legacy paths/identity outside the Git checkout so
+    # adopting an existing runner does not prevent subsequent source updates.
+    from . import adoption
+    return adoption.apply(cfg)
 
 
 def resolve_pat(cfg: Config) -> str | None:

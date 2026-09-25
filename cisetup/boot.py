@@ -19,7 +19,8 @@ from pathlib import Path
 from .config import Config
 from .util import STATE_DIR, ok, run, warn
 
-LOG_PATH = Path.home() / "Library/Logs/ci-runner-setup.log"
+LOG_PATH = Path.home() / "Library/Logs/ci-runner-setup"
+BOOTSTRAP_LOG = LOG_PATH / "bootstrap.log"
 
 # Set inside the agent's plist; lets a converge detect that it IS the boot
 # agent's process (setup execs into python, so launchd tracks our PID).
@@ -57,8 +58,8 @@ def _plist_bytes(cfg: Config) -> bytes:
             # util.runner_busy and the cleanup/update paths).
             "StartInterval": 6 * 60 * 60,
             "WorkingDirectory": str(cfg.repo_root),
-            "StandardOutPath": str(LOG_PATH),
-            "StandardErrorPath": str(LOG_PATH),
+            "StandardOutPath": str(BOOTSTRAP_LOG),
+            "StandardErrorPath": str(BOOTSTRAP_LOG),
         },
         sort_keys=True,
     )
@@ -95,7 +96,7 @@ def _record_label(label: str) -> None:
     _LABEL_STATE.write_text(label + "\n")
 
 
-def ensure(cfg: Config) -> None:
+def ensure(cfg: Config, *, force_reload: bool = False) -> None:
     if not cfg.boot_install:
         # install_agent was turned off — actively remove a previous agent.
         if _recorded_label() or _plist_path(cfg.boot_label).exists():
@@ -110,12 +111,16 @@ def ensure(cfg: Config) -> None:
                 f"boot.label changed while running under the old agent "
                 f"({previous}) — finish this run, then converge once manually"
             )
+            # Keep the old label recorded until a manual run can unload it.
+            # Recording the new label here would orphan the live old agent.
+            return
         else:
             _bootout(previous)
             _plist_path(previous).unlink(missing_ok=True)
             ok(f"removed old boot agent ({previous})")
 
     target = _plist_path(cfg.boot_label)
+    LOG_PATH.mkdir(parents=True, exist_ok=True)
     desired = _plist_bytes(cfg)
     changed = not target.exists() or target.read_bytes() != desired
 
@@ -135,8 +140,8 @@ def ensure(cfg: Config) -> None:
             ok("boot agent is current")
         return
 
-    if changed or not _loaded(cfg.boot_label):
-        if changed:
+    if changed or force_reload or not _loaded(cfg.boot_label):
+        if changed or force_reload:
             _bootout(cfg.boot_label)
         run(
             ["launchctl", "enable", f"{_domain()}/{cfg.boot_label}"],
@@ -168,15 +173,26 @@ def remove(cfg: Config) -> None:
     if recorded:
         labels.add(recorded)
     removed = False
+    active_label = None
     for label in labels:
         if _running_as_agent(label):
-            warn(f"not removing boot agent {label} from within its own run")
+            # Deleting its definition prevents another login from loading
+            # it, but the live schedule must be unloaded by a manual run.
+            _plist_path(label).unlink(missing_ok=True)
+            active_label = label
+            warn(
+                f"boot agent {label} disabled for future logins; run ./setup "
+                "manually once to unload its current schedule after this run"
+            )
             continue
         _bootout(label)
         plist = _plist_path(label)
         if plist.exists():
             plist.unlink()
             removed = True
-    _LABEL_STATE.unlink(missing_ok=True)
+    if active_label is not None:
+        _record_label(active_label)
+    else:
+        _LABEL_STATE.unlink(missing_ok=True)
     if removed:
         ok("boot agent removed")
