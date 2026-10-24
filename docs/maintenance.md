@@ -70,6 +70,9 @@ For changes to machine behavior, use a disposable owned guest and verify the aff
 Toolchain changes should check selected Xcode, required SDKs, simulator boot, Swift tests and Metal compilation/compute.
 Restore-image changes need a real Apple discovery and compatibility check on an Apple silicon host; Linux tests mock that API.
 Host permission changes need a background check and, where authorized, a locked-session test.
+Use `./setup host check --config ~/runner-host.toml` and `./setup host power` for read-only host validation.
+Test power writes with mocked `pmset` and sudo calls; do not apply the dedicated-host option on a workstation.
+Cover missing or malformed power data, unsupported settings, declined confirmation, failed authorization, readback mismatch and stale or disabled startup agents.
 Never run physical runner installation on a developer workstation to validate it.
 
 Cleanup changes must exercise temporary-directory fixtures before any runner test: root/home/installation paths, hidden files, interrupted-job leftovers, symlink replacement, filesystem boundaries, runner control files, timeouts and failure exit codes.

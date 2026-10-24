@@ -31,6 +31,7 @@ Review the destination and settings in `config.toml`, then choose one command:
 It installs tools, registers a runner, applies machine settings and enables job cleanup.
 The host layout installs UTM if missing, downloads compatible macOS from Apple, and provisions the runners inside owned VMs.
 Host security settings are preserved.
+For a dedicated VM host, `./setup install host --dedicated-host` also offers reviewed AC power settings; see the [host checklist](docs/hosts.md#host-checklist).
 
 The guided commands collect credentials, check background permissions and show the plan before provisioning.
 They reuse saved configuration when rerun.
@@ -53,7 +54,7 @@ The [host reference](docs/hosts.md) documents individual VM commands and resourc
 ## Verify the result
 
 For a physical runner, use `./setup status` and confirm that the runner appears as **Idle** in the destination's **Settings → Actions → Runners**.
-For a VM host, use `./setup host status --config ~/runner-host.toml` and check both registered runners.
+For a VM host, use `./setup host check --config ~/runner-host.toml` for power and startup agents, then `./setup host status --config ~/runner-host.toml` and check both registered runners.
 See the [setup guide](docs/setup.md) for background access checks and logs.
 
 ## Existing runners and maintenance
@@ -162,6 +163,8 @@ Initial setup and host inspection:
 ./setup install host --config ~/runner-host.toml # resume an existing layout
 ./setup install host --check --config ~/runner-host.toml # background access check
 ./setup host status --config ~/runner-host.toml
+./setup host check --config ~/runner-host.toml # read-only power and startup-agent checks
+./setup host power # preview dedicated-host AC power settings
 ./setup host --help
 ```
 

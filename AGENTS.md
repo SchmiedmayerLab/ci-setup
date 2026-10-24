@@ -19,7 +19,8 @@ Preserve the required README sections and footers, and use the shared standards 
 
 - Identify whether the current machine is a workstation, VM host or dedicated runner.
   Never run plain `./setup`, `install runner`, `converge` or `update` on a workstation or VM host.
-  Use mocked tests and `install host --check` there.
+  Use mocked tests, `host check`, the `host power` preview and `install host --check` there.
+  Never apply `--dedicated-host` power settings on a workstation during validation.
 - VM mutations must use the configured names and saved owned UUIDs.
   Never adopt, delete, replace, reset or stop unrelated VMs.
   Inspect interrupted state before retrying; do not remove state files to get past an ownership error.

@@ -19,7 +19,7 @@ import tempfile
 import time
 import uuid
 
-from . import config, guests, host, maintenance, power, restore, runner, runlog, util, xcode, xcode_cache
+from . import config, guests, host, host_readiness, maintenance, power, restore, runner, runlog, util, xcode, xcode_cache
 
 
 def apple_access(interactive=False):
@@ -262,7 +262,10 @@ def main(argv):
     parser.add_argument('--name', action='append', help='runner name; repeat for two VMs (host default: discover unused numbers)')
     parser.add_argument('--reserve-memory-gib', type=int, default=8)
     parser.add_argument('--cpu-ratio', type=float, default=1.0)
+    parser.add_argument('--dedicated-host', action='store_true', help='host: review and apply AC power settings before provisioning')
     args = parser.parse_args(argv)
+    if args.dedicated_host and (args.layout != 'host' or args.check):
+        parser.error('--dedicated-host requires install host without --check')
     try:
         cfg = config.load(host.ROOT)
         if args.layout == 'host':
@@ -281,6 +284,10 @@ def main(argv):
         print(f'Layout: {args.layout}. GitHub destination: {cfg.github_url}', flush=True)
         if not args.check:
             prerequisites(args.layout, cfg)
+            if args.layout == 'host':
+                if args.dedicated_host and not host_readiness.configure_power(apply=True):
+                    raise SetupCancelled()
+                host_readiness.require_awake()
         host.runner_credentials(interactive=not args.check)
         if cfg.xcode_manage:
             apple_access(interactive=not args.check)
@@ -290,11 +297,11 @@ def main(argv):
                 path = args.config.expanduser().resolve()
                 check_host_layout(path, host.load(path))
             print('Background access checks passed. No runners or VMs were provisioned.')
-            return 0
+            return host_readiness.check(path) if args.layout == 'host' else 0
         if args.layout == 'host':
             path, spec = host_plan(args, confirm=True)
             install_host(path, spec)
-            return 0
+            return host_readiness.check(path)
         else:
             name = config.validate_runner_name(args.name[0] if args.name else cfg.runner_name)
             if config.saved_runner_name() not in (None, name):

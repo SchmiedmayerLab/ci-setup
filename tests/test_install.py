@@ -37,6 +37,8 @@ class InstallTests(unittest.TestCase):
         self.mock('host.STATE', new=self.root)
         self.mock('config.load', return_value=self.cfg)
         self.mock('host.check_machine')
+        self.mock('host_readiness.require_awake')
+        self.mock('host_readiness.check', return_value=0)
         self.mock('sys.stdin.isatty', return_value=True)
 
     def mock(self, name, **kwargs):
@@ -95,6 +97,40 @@ class InstallTests(unittest.TestCase):
         preflight.assert_called_once()
         self.assertEqual(preflight.call_args.args[1], self.spec)
         prompt.assert_not_called()
+
+    def test_dedicated_host_power_precedes_credentials_and_provisioning(self):
+        events = self.flow()
+        power = self.mock('host_readiness.configure_power', side_effect=lambda **k: events.append('power') or True)
+        awake = self.mock('host_readiness.require_awake', side_effect=lambda: events.append('awake'))
+        with patch('builtins.input', return_value='y'):
+            self.assertEqual(install.main(['host', '--dedicated-host']), 0)
+        self.assertEqual(events[:4], ['prerequisites', 'power', 'awake', 'host.runner_credentials'])
+        power.assert_called_once_with(apply=True)
+        awake.assert_called_once()
+
+    def test_unsafe_sleep_stops_before_credentials_or_guest_creation(self):
+        events = self.flow()
+        self.mock('host_readiness.require_awake', side_effect=host.HostError('sleep prevention missing'))
+        self.assertEqual(install.main(['host']), 1)
+        self.assertEqual(events, ['prerequisites'])
+
+    def test_cancel_power_plan_stops_installation(self):
+        events = self.flow()
+        self.mock('host_readiness.configure_power', return_value=False)
+        self.assertEqual(install.main(['host', '--dedicated-host']), 0)
+        self.assertEqual(events, ['prerequisites'])
+
+    def test_power_flag_rejected_for_check_and_physical_runner(self):
+        for args in (['host', '--check', '--dedicated-host'], ['runner', '--dedicated-host']):
+            with self.subTest(args=args), self.assertRaises(SystemExit) as error:
+                install.main(args)
+            self.assertEqual(error.exception.code, 2)
+
+    def test_post_install_readiness_failure_is_reported(self):
+        self.flow()
+        self.mock('host_readiness.check', return_value=1)
+        with patch('builtins.input', return_value='y'):
+            self.assertEqual(install.main(['host']), 1)
 
     def test_nonterminal_install_fails_before_prerequisites(self):
         events = self.flow()

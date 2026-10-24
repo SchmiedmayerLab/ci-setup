@@ -80,15 +80,18 @@ Review the printed plan before proceeding.
 Generated guest passwords are unique and stored in the host login Keychain.
 Guests have automatic login and SSH enabled: someone with access to a guest console can use its logged-in session.
 Host login, encryption and SSH settings are not changed.
+On a dedicated VM host, `./setup install host --dedicated-host` also previews and requests confirmation for AC idle-sleep and supported power-failure restart settings before provisioning.
+The [host checklist](hosts.md#host-checklist) covers power, restart recovery, permissions, updates and backups.
 
 Finish UTM's first-launch dialogs when shown.
 On a dedicated host, enable UTM's **Prevent system from sleeping when any VM is running** setting.
-The scripts do not alter the host's power policy.
+Without `--dedicated-host`, the scripts preserve the host's power policy and require either disabled AC system idle sleep or UTM's sleep-prevention preference before provisioning.
 Closing a laptop lid can still suspend it.
 
 ## What happens next
 
 1. Check the host platform and committed source, install missing prerequisites, verify the PAT and establish or reuse the Apple session.
+   Before credential checks, host setup verifies sleep prevention; `--dedicated-host` first shows and confirms the supported AC power changes.
 2. Run a temporary LaunchAgent to check background Keychain access and, for VM hosts, both UTM interfaces.
    Approve any system dialogs while unlocked.
    Failure stops before VM creation or runner installation.
@@ -123,7 +126,9 @@ Check an existing installation's prerequisites and background access without pro
 ./setup install runner --check
 ```
 
-These are access checks, not full runner health tests.
+Host access checks also include the read-only host readiness report.
+For a check that does not access credentials or start a temporary agent, use `./setup host check --config ~/runner-host.toml`.
+These are access and configuration checks, not full runner health tests.
 Use `./setup status` on a runner, `./setup host status` on a host, and the GitHub runner page for readiness.
 The `host` subcommands remain available for individual steps and recovery.
 

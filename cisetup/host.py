@@ -575,7 +575,7 @@ def bootstrap():
 
 def main(argv):
     parser = argparse.ArgumentParser(prog='setup host', description=__doc__)
-    parser.add_argument('action', choices=['bootstrap', 'init', 'plan', 'create', 'configure', 'xcode-login', 'refresh-xcode', 'xcode-agent', 'start', 'status', 'login-agent'])
+    parser.add_argument('action', choices=['bootstrap', 'init', 'plan', 'create', 'configure', 'xcode-login', 'refresh-xcode', 'xcode-agent', 'start', 'status', 'login-agent', 'check', 'power'])
     parser.add_argument('--config', type=Path, default=Path.home() / 'runner-host.toml')
     parser.add_argument('--vm', help='configure: operate on only this configured VM name')
     parser.add_argument('--provision', action='store_true', help='create the guest account at first boot (macOS 27+)')
@@ -588,7 +588,10 @@ def main(argv):
     parser.add_argument('--cpu-ratio', type=float, default=1.0, help='init: CPU allocation multiplier, 1–2 (default: 1)')
     parser.add_argument('--automatic-login', action='store_true', help='init: enable automatic guest login at first boot')
     parser.add_argument('--remote-login', action='store_true', help='init: enable guest SSH at first boot')
+    parser.add_argument('--dedicated-host', action='store_true', help='power: confirm and apply AC system sleep and supported power-recovery settings')
     args = parser.parse_args(argv)
+    if args.dedicated_host and args.action != 'power':
+        parser.error('--dedicated-host is only supported with power')
     if args.vm and args.action != 'configure':
         parser.error('--vm is only supported with configure')
     if args.provision and args.action != 'create':
@@ -607,6 +610,12 @@ def main(argv):
             bootstrap()
             return 0
         config = args.config.expanduser().resolve()
+        if args.action in ('check', 'power'):
+            from . import host_readiness
+            if args.action == 'check':
+                return host_readiness.check(config)
+            host_readiness.configure_power(apply=args.dedicated_host)
+            return 0
         if args.action == 'init':
             if config.exists():
                 raise HostError('Configuration already exists; it will not be overwritten')

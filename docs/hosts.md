@@ -12,7 +12,8 @@ Each runner gets its own disk, machine identity, account, credentials, and build
 Rebuild a guest from the same restore image and configuration when it needs a clean start.
 A dedicated physical Mac can still run the regular `./setup install runner`; the VM layer is optional.
 
-Host preparation does not run runner maintenance on the host or change its FileVault, SIP, firewall, remote access, or system power settings.
+Host preparation does not run runner maintenance on the host or change its FileVault, SIP, firewall, remote access or login settings.
+System power settings are preserved unless you explicitly choose and confirm the dedicated-host option below.
 `host configure` installs tools and registers runners inside the owned guests.
 Do not run plain `./setup` on a host that also serves as a workstation.
 
@@ -42,6 +43,7 @@ Use the individual commands in this reference for inspection or recovery.
 3. Open UTM once to finish its first-launch screens.
    In UTM Settings → Application, enable **Prevent system from sleeping when any VM is running** on a dedicated host.
    This is a runtime sleep assertion, not a system-wide power policy.
+   Alternatively, use the dedicated-host power option below to disable AC system idle sleep.
    Keep the host connected to power; closing a laptop lid can still suspend it.
 4. Create the host configuration below.
    Setup downloads the restore image automatically.
@@ -70,6 +72,69 @@ Apple validates the installation media during restore.
 
 The pin reproduces the base installation, not identical VM identities or fixed versions of subsequently downloaded tools.
 Preserve the image and host configuration for rebuilds; old Apple download URLs may eventually become unavailable.
+
+## Host readiness and power settings
+
+Inspect an existing host without starting UTM, accessing credentials, installing agents or changing settings:
+
+```sh
+./setup host check --config ~/runner-host.toml
+```
+
+The check reads AC power settings, the saved host configuration and both startup-agent definitions and loaded commands.
+It accepts either disabled AC system idle sleep or UTM's configured sleep-prevention preference.
+The UTM preference check is not a test of an active sleep assertion.
+It reports missing, disabled, stale or failed agents and checks that the Xcode refresh interval is six hours.
+Exit code `1` means something needs attention; `0` means these checks passed, possibly with an informational hardware limitation.
+A successful check does not prove guest health, credential access or recovery from a cold boot.
+Use `./setup install host --check --config ~/runner-host.toml` for the separate background access and layout checks as well; that command accesses credentials and creates a temporary LaunchAgent.
+
+For a dedicated host, preview the supported power changes:
+
+```sh
+./setup host power
+```
+
+To apply them, use an interactive terminal:
+
+```sh
+./setup host power --dedicated-host
+```
+
+The command shows the current and proposed values and an exact command to restore them before asking for confirmation.
+It disables system idle sleep on AC power and enables restart after power failure if `pmset` reports support.
+It applies only changed values with `sudo pmset -c`, then reads them back and fails if they do not match.
+Battery and UPS settings, display sleep, screen locking, automatic login and encryption are unchanged.
+Unsupported power-recovery settings are reported and left alone.
+If authorization, application or verification fails, inspect `pmset -g custom`; a partial change is possible, and the printed restore command lets you recover the previous values.
+
+For a new dedicated host, include the same option in the guided entry point:
+
+```sh
+./setup install host --dedicated-host
+```
+
+Power review and administrator authorization occur before GitHub and Apple authentication, restore-image downloads and guest provisioning.
+If you decline, installation stops without applying power changes or creating guests.
+Without this option, guided setup checks sleep prevention and stops early if neither AC policy nor the UTM preference confirms it.
+The final readiness check also reports power-recovery and agent problems after installation.
+These settings are not enforced by a recurring privileged service; rerun the read-only check after host changes.
+
+## Host checklist
+
+| Item | Setup coverage and operator responsibility |
+| --- | --- |
+| Enrollment and security | Complete device enrollment and macOS updates first; retain FileVault, SIP, firewall and endpoint controls. Setup does not alter them. |
+| Power and sleep | Use a reliable power connection and either UTM's sleep-prevention preference or the reviewed dedicated-host option. Display sleep and screen locking can stay enabled. Laptop lid closure, explicit sleep and loss of power can still interrupt VMs. |
+| Power-failure recovery | The dedicated-host option enables supported restart behavior. This starts the Mac; it does not unlock FileVault or log in the host user. |
+| Startup | Guided setup installs and loads the VM-start and Xcode-refresh agents for the host user. Confirm them with `host check`; this replaces separate Dock login items or launcher applications. |
+| Permissions and credentials | Complete UTM first launch, Automation and Keychain consent while unlocked. Guided setup checks background access. Renew expired PATs and Apple authentication when required; keep secrets out of logs and configuration. |
+| Login and restart recovery | Keep the host user logged in; locking the screen is supported. After a cold boot, unlock FileVault and log in, then check host readiness, guest startup and runner availability. Test this during a planned maintenance window. |
+| Host and UTM updates | Pause new jobs through the runner group's normal administration process, wait for active jobs and maintenance to finish, then shut down owned guests before updating or rebooting. After login, check both guests and run a validation job before restoring normal scheduling. Setup does not orchestrate host updates or restart crashed VMs. |
+| Configuration and backups | Keep the checkout and its interpreter at stable paths outside protected user folders. Back up the saved layout, ownership state and credentials through the normal secure backup process. A layout alone cannot recover passwords or irreplaceable guest files; setup does not create backups. |
+
+Host SSH and Screen Sharing are optional administration choices and are not enabled by setup.
+Never run physical-runner setup on the host to obtain these host settings.
 
 ## Names and resources
 
