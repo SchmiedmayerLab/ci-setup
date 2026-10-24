@@ -69,3 +69,9 @@ jobs:
           xcrun swiftc host/restore-image.swift -o "$restore_helper"
           codesign --sign - --entitlements host/restore-image.entitlements "$restore_helper"
           codesign --verify --strict "$restore_helper"
+      - name: Compile and verify the background launcher
+        run: |
+          runner_host="$RUNNER_TEMP/runner-host"
+          xcrun swiftc host/runner-host.swift -o "$runner_host"
+          codesign --sign - "$runner_host"
+          codesign --verify --strict "$runner_host"

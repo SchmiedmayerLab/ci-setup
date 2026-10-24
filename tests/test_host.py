@@ -31,6 +31,7 @@ class HostTests(unittest.TestCase):
                      'vm': [{'name': 'runner-01', 'cpus': 4, 'memory_gib': 8, 'disk_gib': 128}]}
         self.identifier = str(uuid.uuid4()).upper()
         self.calls = []
+        self.patch('STATE', new=self.root)
         self.patch('preflight')
         self.live = self.patch('inventory', return_value={})
         self.image = self.patch('image_ready', return_value=27)
@@ -355,7 +356,7 @@ class HostBoundaryTests(unittest.TestCase):
 
     def test_sizes_reserve_host_ram_and_scale_disk_capacity(self):
         one_tb = host.resource_sizes(64, 18, 931, 870)
-        self.assertEqual(one_tb, {'cpus': 8, 'memory_gib': 28, 'disk_gib': 384})
+        self.assertEqual(one_tb, {'cpus': 12, 'memory_gib': 24, 'disk_gib': 384})
         two_tb = host.resource_sizes(64, 18, 1862, 1700, reserve_memory=16, cpu_ratio=1.5)
         self.assertEqual(two_tb, {'cpus': 12, 'memory_gib': 24, 'disk_gib': 512})
         with self.assertRaises(host.HostError):

@@ -40,6 +40,19 @@ Reuse the existing locks, credential handling and maintenance guard.
 Add a focused regression test that reproduces the failure and proves the safe outcome on retry.
 
 Run the applicable unit tests, Python lint, shell syntax and REUSE checks.
+The host installer supplies runtime prerequisites, not the flake8 and REUSE validation tools.
+After bootstrap provides Python 3.11+, install validation tools in a virtual environment outside the provisioning checkout:
+
+```sh
+python3 -m venv ~/runner-validation-venv
+. ~/runner-validation-venv/bin/activate
+python -m pip install flake8 'reuse[charset-normalizer]'
+```
+
+The REUSE encoding-detection extra avoids requiring a separate system libmagic installation on a clean Mac.
+A plain `pip install reuse` can install successfully but leave `reuse lint` unable to start with `NoEncodingModuleError`.
+Keep validation dependencies outside the checkout so it remains clean for guest provisioning.
+
 The tests mock machine operations, but `tests/test_update.py` creates Git fixture commits with signing disabled.
 Where policy requires every commit to be signed, exclude that module and report the exclusion; do not override the policy.
 
@@ -90,3 +103,17 @@ Include a reproducible test without secrets.
 Inspect the diff and metadata, sign commits according to the user's configured policy, and verify signatures.
 Publishing a branch, issue or pull request is a separate, explicitly approved action.
 If a macOS change needs fresh user consent, document that boundary instead of bypassing it.
+
+## Fresh-host release evidence
+
+Keep a concise current acceptance table separate from the chronological investigation journal.
+Record the exact signed source revision, host and guest versions, chosen resource policy, manual prompts, successful stages, failed stages and untested stages.
+Distinguish the original source tested on the Mac from local fixes tested only in a review copy.
+Record agent exit results after execution; installed, loaded and currently running are not equivalent to successful maintenance.
+Separate foreground credential access, background credential access and background guest SSH.
+An external outage is not proof of invalid credentials, and a “No route to host” diagnostic alone does not prove a privacy-permission cause.
+
+A complete host validation needs real concurrent GitHub jobs, cleanup through real jobs, active-job maintenance deferral and coordinated restart recovery in addition to local smoke checks.
+Keep physical-host runner validation explicitly separate when it is outside the test scope.
+Follow [the completion checklist](setup.md#completion-checklist) and retain a sanitized reproduction before changing code or machine settings.
+The [prepare/automate flow](prepare.md) preserves these distinctions; test its real launchd handoff and failure recovery as well as mocked provisioning phases.

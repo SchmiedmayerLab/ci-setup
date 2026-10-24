@@ -8,12 +8,18 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import time
 
 from . import host, xcode
 from .util import SetupError
+
+
+class AppleAccessUnavailable(host.HostError):
+    """A transport/service failure is not evidence that credentials are invalid."""
 
 
 def cli():
@@ -38,10 +44,19 @@ def command(arguments, timeout=600):
     try:
         result = subprocess.run([cli(), *arguments], stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        raise host.HostError('Host Xcode operation timed out; retry after checking the network and Apple session') from error
+    except subprocess.TimeoutExpired:
+        raise AppleAccessUnavailable('Host Xcode operation timed out; check the network and retry without replacing credentials') from None
+    except OSError:
+        raise AppleAccessUnavailable('Host Xcode tool could not be started; check its installation before retrying') from None
     if result.returncode:
-        raise host.HostError('Host Xcode operation failed; run ./setup host xcode-login in your terminal and retry')
+        # Read only a numeric status from xcodes' structured error. Never relay
+        # its body, account identifiers, cookies, session URLs or other output.
+        statuses = re.findall(r'NetworkError\.non200StatusCode\(statusCode:\s*([0-9]{3})\b',
+                              result.stdout + '\n' + result.stderr)
+        if any(code == '429' or code.startswith('5') for code in statuses):
+            raise AppleAccessUnavailable('Apple access is temporarily unavailable (HTTP 429 or 5xx). '
+                                         'Retry later; this does not establish that the credentials are invalid')
+        raise host.HostError('Host Xcode operation failed; check the network, saved Apple session and login Keychain')
     return result.stdout
 
 
@@ -115,6 +130,38 @@ def stage(connection, manifest, staging):
     connection.run(['/bin/mv', destination + '.new', destination])
 
 
+def wait_for_guests(spec, state_path, *, timeout=600):
+    """Let login startup finish without holding its host lock or starting VMs."""
+    from . import guests
+    deadline = time.monotonic() + timeout
+    announced = False
+    while True:
+        state = host.read_state(state_path, spec)
+        if (set(state['vms']) != {vm['name'] for vm in spec['vm']}
+                or any(not entry.get('runner_revision') for entry in state['vms'].values())):
+            raise host.HostError('Finish host configure before refreshing Xcode')
+        live = host.inventory()
+        host.check_owned(state, live)
+        statuses = [live[entry['id']]['status'] for entry in state['vms'].values()]
+        if any(status not in {'stopped', 'starting', 'resuming', 'started'} for status in statuses):
+            raise host.HostError('Guest state requires inspection before Xcode refresh; no VM was changed')
+        if all(status == 'started' for status in statuses):
+            try:
+                for _, connection in guests.connections(spec, state):
+                    connection.run(['/usr/bin/true'], timeout=20)
+                return
+            except host.HostError:
+                # DHCP, SSH and guest login can lag behind UTM's started state.
+                # Keep third-party diagnostics and credentials out of this log.
+                pass
+        if time.monotonic() >= deadline:
+            raise host.HostBusy('Xcode refresh deferred: owned guests are not reachable; inspect startup, networking and Runner Host permissions')
+        if not announced:
+            print('Waiting for owned guests and SSH before Xcode refresh; the host startup lock remains available.', flush=True)
+            announced = True
+        time.sleep(5)
+
+
 def refresh(spec, state_path):
     """Refresh already configured guests; their own locks defer active jobs."""
     from . import config, guests
@@ -126,17 +173,30 @@ def refresh(spec, state_path):
     if manifest is None:
         return
     failures = []
+    deferred = []
     for vm, connection in targets:
         staging = f'/Users/{connection.username}/Library/Application Support/runner-bootstrap'
+        phase = 'archive staging'
         try:
             stage(connection, manifest, staging)
+            phase = 'guest maintenance'
             connection.logged(['/bin/bash', staging + '/bootstrap-guest.sh', '--converge',
                                f'/Users/{connection.username}/runner-setup'],
-                              staging + '/converge.log', input=connection.password() + '\n', timeout=12 * 3600)
-        except host.HostError:
-            failures.append(vm['name'])
+                              staging + '/converge.log', input=connection.password() + '\n', timeout=12 * 3600, defer_on_busy=True)
+        except host.HostBusy:
+            print(f'{vm["name"]}: guest maintenance deferred; active jobs or another maintenance run were preserved', flush=True)
+            deferred.append(vm['name'])
+        except host.HostError as error:
+            # General command errors may include private output; expose only a
+            # known fixed transport diagnostic and the phase that failed.
+            detail = str(error) if isinstance(error, guests.GuestConnectionError) else 'inspect this phase locally'
+            print(f'{vm["name"]}: {phase} failed: {detail}', flush=True)
+            failures.append(vm['name'] + ' (' + phase + ')')
     if failures:
-        raise host.HostError('Xcode maintenance incomplete in: ' + ', '.join(failures) + '; inspect guest converge logs')
+        raise host.HostError('Xcode maintenance incomplete in: ' + ', '.join(failures)
+                             + '; guest converge logs apply only after maintenance starts')
+    if deferred:
+        raise host.HostBusy('Xcode refresh deferred in: ' + ', '.join(deferred) + '; retry after jobs or guest maintenance finish')
 
 
 def agent(config, spec, state_path):
@@ -147,9 +207,9 @@ def agent(config, spec, state_path):
         raise host.HostError('Finish host configure before enabling scheduled Xcode refresh')
     label = 'com.selfhosted-runner.xcode-downloads'
     target = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
-    definition = {'Label': label, 'RunAtLoad': True, 'StartInterval': 21600,
-                  'ProgramArguments': [sys.executable, str(host.ROOT / 'bin/ci-setup'),
-                                       'host', 'refresh-xcode', '--config', str(config)],
+    from . import background
+    definition = {'Label': label, 'RunAtLoad': True, 'StartInterval': 21600, **background.properties(),
+                  'ProgramArguments': background.arguments(['host', 'refresh-xcode', '--config', str(config)]),
                   'StandardOutPath': str(host.STATE / 'xcode-refresh.log'),
                   'StandardErrorPath': str(host.STATE / 'xcode-refresh.log')}
     content = plistlib.dumps(definition)

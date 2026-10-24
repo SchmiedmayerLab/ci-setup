@@ -34,6 +34,7 @@ class HostReadinessTests(unittest.TestCase):
         self.root = Path(tmp.name)
         self.config = self.root / 'host.toml'
         for target, kwargs in (
+            ('host.STATE', {'new': self.root / 'state'}),
             ('subprocess.run', {'side_effect': AssertionError('unexpected command')}),
             ('Path.home', {'return_value': self.root}),
         ):

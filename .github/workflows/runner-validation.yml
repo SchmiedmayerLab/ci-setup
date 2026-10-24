@@ -16,6 +16,11 @@ on:
         description: Second runner display name
         required: true
         default: GitHub Runner 4
+      validation_hold_seconds:
+        description: Optional idle-workload hold for checking busy-job deferral (0-300 seconds)
+        type: number
+        required: true
+        default: 0
 
 permissions:
   contents: read
@@ -50,7 +55,7 @@ jobs:
           cd "$project"
           swift package init --type library --name RunnerValidation
           swift test
-      - name: Compile a Metal shader
+      - name: Compile and execute a Metal shader
         run: |
           project="$(mktemp -d "$RUNNER_TEMP/metal-validation.XXXXXX")"
           cat > "$project/smoke.metal" <<'METAL'
@@ -62,6 +67,55 @@ jobs:
           METAL
           xcrun -sdk macosx metal -c "$project/smoke.metal" -o "$project/smoke.air"
           test -s "$project/smoke.air"
+          xcrun -sdk macosx metallib "$project/smoke.air" -o "$project/smoke.metallib"
+          cat > "$project/smoke.swift" <<'SWIFT'
+          import Foundation
+          import Metal
+
+          func require<T>(_ value: T?, _ message: String) throws -> T {
+              guard let value else {
+                  throw NSError(domain: "RunnerValidation", code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: message])
+              }
+              return value
+          }
+
+          guard CommandLine.arguments.count == 2 else {
+              fatalError("Expected the compiled Metal library path")
+          }
+          let device = try require(MTLCreateSystemDefaultDevice(), "No Metal device in this guest")
+          let library = try device.makeLibrary(URL: URL(fileURLWithPath: CommandLine.arguments[1]))
+          let function = try require(library.makeFunction(name: "smoke"), "Missing smoke kernel")
+          let pipeline = try device.makeComputePipelineState(function: function)
+          let count = 256
+          let buffer = try require(device.makeBuffer(length: count * MemoryLayout<Float>.stride,
+                                                    options: .storageModeShared), "Buffer allocation failed")
+          let values = buffer.contents().bindMemory(to: Float.self, capacity: count)
+          for index in 0..<count { values[index] = Float(index) }
+          let queue = try require(device.makeCommandQueue(), "No command queue")
+          let command = try require(queue.makeCommandBuffer(), "No command buffer")
+          let encoder = try require(command.makeComputeCommandEncoder(), "No compute encoder")
+          encoder.setComputePipelineState(pipeline)
+          encoder.setBuffer(buffer, offset: 0, index: 0)
+          encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1),
+                                  threadsPerThreadgroup: MTLSize(width: min(count, pipeline.maxTotalThreadsPerThreadgroup),
+                                                                height: 1, depth: 1))
+          encoder.endEncoding()
+          command.commit()
+          command.waitUntilCompleted()
+          guard command.status == .completed else {
+              throw command.error ?? NSError(domain: "RunnerValidation", code: 2,
+                                             userInfo: [NSLocalizedDescriptionKey: "Metal execution failed"])
+          }
+          for index in 0..<count {
+              guard values[index] == Float(index + 1) else {
+                  fatalError("Incorrect Metal result at index \(index)")
+              }
+          }
+          print("Metal compute verified \(count) values on \(device.name)")
+          SWIFT
+          xcrun swiftc "$project/smoke.swift" -o "$project/smoke"
+          "$project/smoke" "$project/smoke.metallib"
       - name: Boot each simulator platform
         shell: python3 {0}
         run: |
@@ -96,3 +150,100 @@ jobs:
               finally:
                   subprocess.run(["xcrun", "simctl", "shutdown", device], capture_output=True, timeout=60)
                   simctl("delete", device, timeout=60)
+      - name: Check cleanup on disposable job fixtures
+        id: cleanup_probe
+        shell: python3 {0}
+        run: |
+          import fcntl
+          import os
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          import uuid
+
+          assert os.environ.get('selfhosted') == 'true', 'Automatic start hook did not set its marker'
+          work = Path(os.environ['CI_SETUP_WORK_DIR']).resolve()
+          assert work != Path.home() and work.is_relative_to(Path.home())
+          assert Path(os.environ['RUNNER_WORKSPACE']).parent.resolve() == work
+          hook = Path(os.environ['ACTIONS_RUNNER_HOOK_JOB_COMPLETED']).resolve()
+          checkout = Path.home() / 'runner-setup'
+          assert hook == checkout / 'hooks/job-completed.sh'
+          probe = 'ci-validation-' + uuid.uuid4().hex
+          hidden = work / ('.' + probe)
+          hidden.write_text('disposable hidden file')
+          leftover = work / probe
+          leftover.mkdir()
+          (leftover / 'interrupted-job').write_text('disposable leftover')
+          sentinel_dir = Path(tempfile.mkdtemp(prefix=probe + '-'))
+          sentinel = sentinel_dir / 'sentinel'
+          sentinel.write_text('preserve outside target')
+          link = work / (probe + '-link')
+          link.symlink_to(sentinel)
+          controls = []
+          for name in ('_actions', '_temp', '_tool', '_PipelineMapping'):
+              directory = work / name
+              assert not directory.is_symlink()
+              directory.mkdir(exist_ok=True)
+              assert directory.resolve().parent == work
+              marker = directory / probe
+              marker.write_text('preserve runner control directory')
+              controls.append(marker)
+          command_files = [Path(os.environ[key]) for key in ('GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH', 'GITHUB_STEP_SUMMARY')]
+          for path in command_files:
+              assert path.is_file(), 'GitHub command file missing before probe'
+
+          # Refusing an invalid job path must happen before deleting anything.
+          invalid = subprocess.run([str(hook)], env=dict(os.environ, GITHUB_WORKSPACE='/'),
+                                   capture_output=True, text=True, timeout=30)
+          assert invalid.returncode != 0 and hidden.exists() and sentinel.exists()
+          assert 'outside its registered pipeline directory' in invalid.stderr + invalid.stdout
+          print('Invalid workspace refused; fixtures retained')
+
+          # A competing maintenance lock must also stop cleanup before mutation.
+          lock_path = Path.home() / 'Library/Application Support/ci-runner-setup/setup.lock'
+          with lock_path.open('r+') as lock:
+              fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+              blocked = subprocess.run([str(hook)], capture_output=True, text=True, timeout=30)
+              assert blocked.returncode != 0 and hidden.exists() and sentinel.exists()
+              assert 'setup maintenance is already running' in blocked.stderr + blocked.stdout
+          print('Lock contention refused; fixtures retained')
+
+          # Exercise a real subprocess deadline with a deliberately shortened test limit.
+          fault = ('import sys; sys.path.insert(0,sys.argv[1]); from cisetup import cleanup; '
+                   'cleanup.FILES_TIMEOUT=0; raise SystemExit(cleanup.main(["completed"]))')
+          timed = subprocess.run([os.environ['CI_SETUP_PYTHON'], '-c', fault, str(checkout)],
+                                 capture_output=True, text=True, timeout=30)
+          assert timed.returncode != 0 and 'timed out' in timed.stderr + timed.stdout
+          assert hidden.exists() and sentinel.exists()
+          print('Injected cleanup deadline failed clearly; fixtures retained')
+
+          subprocess.run([str(hook)], check=True, timeout=600)
+          assert not hidden.exists() and not leftover.exists() and not link.is_symlink()
+          assert sentinel.read_text() == 'preserve outside target'
+          assert all(p.read_text() == 'preserve runner control directory' for p in controls)
+          assert all(p.is_file() for p in command_files)
+          with Path(os.environ['GITHUB_ENV']).open('a') as stream:
+              stream.write('CI_CLEANUP_COMMAND_FILE=preserved\n')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
+              stream.write('preserved=true\n')
+          print('Hidden files and interrupted-job leftovers removed; control files and symlink target preserved')
+          print('Retained disposable sentinel:', sentinel)
+          print('Retained control markers:', probe)
+      - name: Verify GitHub command files survived cleanup
+        env:
+          CLEANUP_OUTPUT: ${{ steps.cleanup_probe.outputs.preserved }}
+        run: |
+          test "$CI_CLEANUP_COMMAND_FILE" = preserved
+          test "$CLEANUP_OUTPUT" = true
+      - name: Hold job for maintenance-deferral validation
+        env:
+          HOLD_SECONDS: ${{ inputs.validation_hold_seconds }}
+        shell: python3 {0}
+        run: |
+          import os
+          import time
+          seconds = int(os.environ["HOLD_SECONDS"])
+          if not 0 <= seconds <= 300:
+              raise ValueError("validation_hold_seconds must be between 0 and 300")
+          print("Holding validation job for", seconds, "seconds", flush=True)
+          time.sleep(seconds)

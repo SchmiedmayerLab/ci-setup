@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -19,33 +20,68 @@ import tempfile
 import time
 import uuid
 
-from . import config, guests, host, host_readiness, maintenance, power, restore, runner, runlog, util, xcode, xcode_cache
+from . import background, config, guests, host, host_readiness, maintenance, power, restore, runner, runlog, util, xcode, xcode_cache
 
 
 def apple_access(interactive=False):
     try:
         xcode_cache.command(['update', '--data-source', 'apple'], timeout=120)
+    except xcode_cache.AppleAccessUnavailable:
+        raise
     except host.HostError:
         if not interactive:
             raise
-        xcode_cache.login()
-        xcode_cache.command(['update', '--data-source', 'apple'], timeout=120)
+        print('Apple access could not be verified. Check the network and login Keychain; '
+              'the saved session may also need sign-in.', flush=True)
+        for attempt in range(3):
+            question = 'Start Apple sign-in now? [y/N] ' if attempt == 0 else 'Retry Apple sign-in? [y/N] '
+            if input(question).strip().lower() != 'y':
+                raise SetupCancelled()
+            try:
+                xcode_cache.login()
+            except host.HostError:
+                print('Apple sign-in did not complete. Check the account, password, two-factor '
+                      'approval, network and Keychain access.', flush=True)
+                if attempt == 2:
+                    raise host.HostError('Apple sign-in did not complete after three attempts; no provisioning started') from None
+                continue
+            # A successful interactive login must work in a separate invocation
+            # without input before we proceed to the launchd access check.
+            try:
+                xcode_cache.command(['update', '--data-source', 'apple'], timeout=120)
+            except xcode_cache.AppleAccessUnavailable:
+                raise
+            except host.HostError:
+                raise host.HostError('Apple sign-in completed, but the immediate non-interactive access check failed. '
+                                     'Check the saved session, Keychain access and network; credentials were not proven invalid. '
+                                     'No provisioning started') from None
+            break
+    if interactive:
+        print('Apple access verified without interactive input. Checking background access next.', flush=True)
 
 
-def probe(layout, result):
+def probe(layout, result, guest_config=None):
     """Run under launchd; write only fixed diagnostics, never command output."""
     stage = 'GitHub token and login Keychain'
     try:
-        cfg = host.runner_credentials()
-        if cfg.xcode_manage:
-            stage = 'Apple session and login Keychain'
-            apple_access()
-        if layout == 'host':
+        if layout != 'guest':
+            cfg = host.runner_credentials()
+            if cfg.xcode_manage:
+                stage = 'Apple access (session, Keychain or network)'
+                apple_access()
+        if layout in ('host', 'guest'):
             stage = 'UTM command-line automation'
             host.inventory()
             stage = 'UTM AppleScript automation'
             host.command(['/usr/bin/osascript', '-e', 'tell application "UTM" to get version'], timeout=30)
+        if guest_config is not None:
+            stage = 'guest SSH and login Keychain from background app'
+            spec = host.load(guest_config)
+            for _, connection in guests.connections(spec, host.read_state(host.state_path(guest_config), spec)):
+                connection.run(['/usr/bin/true'], timeout=20)
         payload = {'ok': True}
+    except xcode_cache.AppleAccessUnavailable:
+        payload = {'ok': False, 'stage': 'Apple service, network or download-tool availability'}
     except Exception:
         payload = {'ok': False, 'stage': stage}
     pending = result.with_suffix('.pending')
@@ -54,7 +90,7 @@ def probe(layout, result):
     pending.replace(result)
 
 
-def background_check(layout):
+def background_check(layout, guest_config=None):
     """Exercise credentials and Automation in the same interpreter as the agents."""
     host.STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     domain = f'gui/{os.getuid()}'
@@ -67,7 +103,9 @@ def background_check(layout):
         plist.write_bytes(plistlib.dumps({
             'Label': label, 'RunAtLoad': True,
             'WorkingDirectory': str(host.ROOT),
-            'ProgramArguments': [sys.executable, '-m', 'cisetup.install', '_probe', layout, str(result)],
+            'ProgramArguments': background.arguments(['_host-probe', layout, str(result)]
+                                                       + ([str(guest_config)] if guest_config is not None else [])),
+            **background.properties(),
             'StandardOutPath': '/dev/null', 'StandardErrorPath': '/dev/null',
         }))
         plist.chmod(0o600)
@@ -189,18 +227,65 @@ def load_agent(label, *, wait=False):
             time.sleep(1)
 
 
-def install_host(path, spec):
+def verify_agent(label, *, timeout=26 * 3600):
+    """Require an actual successful execution, not merely a loaded agent."""
+    service = f'gui/{os.getuid()}/{label}'
+    # No -k: never interrupt an active maintenance run. kickstart without -k
+    # starts an idle agent or joins the already running invocation.
+    host.command(['/bin/launchctl', 'kickstart', '-p', service], timeout=30)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = host.command(['/bin/launchctl', 'print', service], timeout=15)
+        if not re.search(r'^\s*state = running\s*$', status, re.M):
+            last = re.search(r'^\s*last exit code = (-?\d+)\s*$', status, re.M)
+            if last:
+                if last[1] == '2':
+                    raise host.HostBusy('Background maintenance deferred; resume after active jobs or maintenance finish')
+                if last[1] != '0':
+                    raise host.HostError('Background agent failed; inspect its host log before resuming')
+                return
+        time.sleep(2)
+    raise host.HostError('Background agent has not completed within its verification deadline; inspect its current state')
+
+
+def install_host(path, spec, *, progress=None, verify_agents=False):
+    def phase(name, action):
+        if progress:
+            progress.phase(name)
+        action()
+        if progress:
+            progress.done(name)
+
     state = host.state_path(path)
     with host.locked():
-        host.create(spec, state, provision=True, keychain_passwords=True)
+        phase('guests', lambda: host.create(spec, state, provision=True, keychain_passwords=True))
         host.start(spec, state)
-        wait_for_guests(spec, state)
-        guests.configure(spec, state)
+        phase('guest_access', lambda: wait_for_guests(spec, state))
+        phase('configure', lambda: guests.configure(spec, state))
+        if progress:
+            progress.phase('agents')
+        if verify_agents:
+            background.migrate_agents(path)
         host.login_agent(path, spec, state)
         xcode_cache.agent(path, spec, state)
     # RunAtLoad jobs take the same host lock. Load them only after releasing it.
-    load_agent(host.LABEL, wait=True)
+    load_agent(host.LABEL, wait=not verify_agents)
+    if verify_agents:
+        verify_agent(host.LABEL, timeout=600)
+    # Finish startup verification before launching a potentially long refresh
+    # that needs the same host lock.
     load_agent('com.selfhosted-runner.xcode-downloads')
+    if verify_agents:
+        verify_agent('com.selfhosted-runner.xcode-downloads')
+        if progress:
+            progress.done('agents')
+            progress.phase('verify')
+        if host_readiness.check(path):
+            raise host.HostError('Host readiness remains incomplete')
+        for vm, connection in guests.connections(spec, host.read_state(state, spec)):
+            guests.wait_for_runner(connection, f'/Users/{connection.username}/runner-setup', vm['name'])
+        if progress:
+            progress.done('verify')
 
 
 @contextmanager
@@ -256,21 +341,35 @@ def install_runner(cfg, name):
 def main(argv):
     parser = argparse.ArgumentParser(prog='setup install', description=__doc__)
     parser.add_argument('layout', choices=['runner', 'host'])
+    parser.add_argument('--prepared', action='store_true', help='host: run the previously approved plan without prompts')
+    parser.add_argument('--agent', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--check', action='store_true', help='check existing prerequisites and background access without provisioning')
     parser.add_argument('--config', type=Path, default=Path.home() / 'runner-host.toml', help='host configuration; preserved on rerun')
     parser.add_argument('--image', type=Path, help='host: optional local restore image; otherwise download from Apple')
     parser.add_argument('--name', action='append', help='runner name; repeat for two VMs (host default: discover unused numbers)')
-    parser.add_argument('--reserve-memory-gib', type=int, default=8)
-    parser.add_argument('--cpu-ratio', type=float, default=1.0)
+    parser.add_argument('--reserve-memory-gib', type=int,
+                        help='host: RAM reserve (default: one quarter of RAM, minimum 8 GiB, maximum 16 GiB)')
+    parser.add_argument('--cpu-ratio', type=float, default=host.DEFAULT_CPU_RATIO,
+                        help='host: CPU allocation multiplier (default: 1.5; use 1 to avoid oversubscription)')
     parser.add_argument('--dedicated-host', action='store_true', help='host: review and apply AC power settings before provisioning')
     args = parser.parse_args(argv)
+    if args.agent and not args.prepared:
+        parser.error('--agent requires --prepared')
+    if args.prepared:
+        if (args.layout != 'host' or args.check or args.dedicated_host or args.image or args.name
+                or args.reserve_memory_gib is not None or args.cpu_ratio != host.DEFAULT_CPU_RATIO):
+            parser.error('--prepared requires host and only the saved --config; run prepare host to review changes')
+        from . import preparation
+        # Worker subprocesses inherit /dev/null and cannot fall back to a TTY.
+        util.INTERACTIVE = False
+        return preparation.run(args.config.expanduser().resolve(), agent=args.agent)
     if args.dedicated_host and (args.layout != 'host' or args.check):
         parser.error('--dedicated-host requires install host without --check')
     try:
         cfg = config.load(host.ROOT)
         if args.layout == 'host':
             host.check_machine(provision=True)
-        elif args.image or args.reserve_memory_gib != 8 or args.cpu_ratio != 1.0 or args.config != Path.home() / 'runner-host.toml':
+        elif args.image or args.reserve_memory_gib is not None or args.cpu_ratio != host.DEFAULT_CPU_RATIO or args.config != Path.home() / 'runner-host.toml':
             raise host.HostError('Image, host configuration and VM sizing options apply only to install host')
         if args.layout == 'runner' and args.name and len(args.name) != 1:
             raise host.HostError('A physical runner takes exactly one --name')

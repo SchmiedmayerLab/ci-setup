@@ -123,6 +123,44 @@ class ArchiveTests(unittest.TestCase):
                 xcode_cache.refresh({}, self.root / 'state')
         second.logged.assert_called_once()
 
+    def test_staging_failure_is_not_reported_as_guest_converge_failure(self):
+        first = MagicMock(username='runner')
+        with patch('cisetup.config.load', return_value=self.cfg), \
+                patch.object(host, 'read_state', return_value={'vms': {'one': {'runner_revision': 'test'}}}), \
+                patch('cisetup.guests.connections', return_value=[({'name': 'one'}, first)]), \
+                patch.object(xcode_cache, 'stage', side_effect=host.HostError('private-test-secret')), \
+                patch('builtins.print') as output:
+            with self.assertRaisesRegex(host.HostError, 'archive staging') as caught:
+                xcode_cache.refresh({}, self.root / 'state')
+        first.logged.assert_not_called()
+        self.assertNotIn('private-test-secret', str(caught.exception))
+        self.assertNotIn('private-test-secret', str(output.call_args_list))
+
+    def test_busy_guest_is_deferred_and_other_guest_still_refreshes(self):
+        first, second = MagicMock(username='runner'), MagicMock(username='runner')
+        first.logged.side_effect = host.HostBusy('synthetic private detail')
+        with patch('cisetup.config.load', return_value=self.cfg), \
+                patch.object(host, 'read_state', return_value={'vms': {'one': {'runner_revision': 'test'}}}), \
+                patch('cisetup.guests.connections', return_value=[({'name': 'one'}, first), ({'name': 'two'}, second)]), \
+                patch.object(xcode_cache, 'stage'):
+            with self.assertRaisesRegex(host.HostBusy, 'deferred in: one') as caught:
+                xcode_cache.refresh({}, self.root / 'state')
+        second.logged.assert_called_once()
+        self.assertTrue(first.logged.call_args.kwargs['defer_on_busy'])
+        self.assertNotIn('synthetic private', str(caught.exception))
+
+    def test_real_failure_is_not_hidden_by_another_guests_deferral(self):
+        first, second = MagicMock(username='runner'), MagicMock(username='runner')
+        first.logged.side_effect = host.HostBusy('busy')
+        second.logged.side_effect = host.HostError('failed')
+        with patch('cisetup.config.load', return_value=self.cfg), \
+                patch.object(host, 'read_state', return_value={'vms': {'one': {'runner_revision': 'test'}}}), \
+                patch('cisetup.guests.connections', return_value=[({'name': 'one'}, first), ({'name': 'two'}, second)]), \
+                patch.object(xcode_cache, 'stage'):
+            with self.assertRaisesRegex(host.HostError, 'two') as caught:
+                xcode_cache.refresh({}, self.root / 'state')
+        self.assertNotIsInstance(caught.exception, host.HostBusy)
+
     def test_guest_installs_from_archive_without_apple_discovery(self):
         release = xcode.Release((27, 2), ('rc', 1), '27.2 Release Candidate', 'B')
         stable = xcode.Release((27, 1), (), '27.1', 'A')

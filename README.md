@@ -16,7 +16,9 @@ SPDX-License-Identifier: MIT
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 
 Set up a dedicated physical runner or an Apple silicon host with runner VMs.
-Start in Terminal while logged in and unlocked.
+Start in a normal local Terminal while logged in and unlocked.
+On a fresh Mac, first follow [getting the checkout](docs/setup.md#get-the-checkout-on-a-fresh-mac): install and verify Command Line Tools, then clone to a durable location such as `~/runner-setup`.
+Keep the administrator password, scoped GitHub PAT and Apple two-factor device available for the [interactive preparation](docs/setup.md#plan-the-interactive-session).
 Review the destination and settings in `config.toml`, then choose one command:
 
 ```sh
@@ -24,17 +26,19 @@ Review the destination and settings in `config.toml`, then choose one command:
 ./setup install runner
 
 # Host with two runner VMs
-./setup install host
+./setup prepare host --dedicated-host
 ```
 
 **Use `install runner` only on a dedicated runner machine.**
 It installs tools, registers a runner, applies machine settings and enables job cleanup.
 The host layout installs UTM if missing, downloads compatible macOS from Apple, and provisions the runners inside owned VMs.
 Host security settings are preserved.
-For a dedicated VM host, `./setup install host --dedicated-host` also offers reviewed AC power settings; see the [host checklist](docs/hosts.md#host-checklist).
+For a dedicated VM host, `prepare host --dedicated-host` includes reviewed AC power settings; see the [host checklist](docs/hosts.md#host-checklist).
 
-The guided commands collect credentials, check background permissions and show the plan before provisioning.
-They reuse saved configuration when rerun.
+`prepare host` collects credentials, requests macOS permissions and reviews the plan before handing provisioning to a persistent background agent.
+After it reports **Background provisioning started**, close the Terminal if desired and use `./setup host progress` to follow the work or `./setup host resume` after resolving a failure.
+See [interactive preparation and automatic provisioning](docs/prepare.md) for the prompt sequence, progress states and recovery commands.
+The foreground `install host` command remains available for compatibility; keep its terminal open until it finishes.
 See the [setup guide](docs/setup.md) for prerequisites, token scopes, unattended operation and the steps that still require a person.
 The [host reference](docs/hosts.md) documents individual VM commands and resource choices.
 
@@ -55,7 +59,9 @@ The [host reference](docs/hosts.md) documents individual VM commands and resourc
 
 For a physical runner, use `./setup status` and confirm that the runner appears as **Idle** in the destination's **Settings → Actions → Runners**.
 For a VM host, use `./setup host check --config ~/runner-host.toml` for power and startup agents, then `./setup host status --config ~/runner-host.toml` and check both registered runners.
-See the [setup guide](docs/setup.md) for background access checks and logs.
+A successful preflight or a VM state of `ready` does not prove that a runner can execute jobs.
+Use the [completion checklist](docs/setup.md#completion-checklist) to verify both guests, actual background maintenance and a real GitHub validation workflow.
+See [troubleshooting](docs/setup.md#troubleshooting-by-phase) for the observed fresh-machine failure modes and the correct logs.
 
 ## Existing runners and maintenance
 
@@ -159,7 +165,10 @@ Initial setup and host inspection:
 
 ```sh
 ./setup install runner
-./setup install host
+./setup prepare host --dedicated-host
+./setup host progress
+./setup host resume
+./setup install host # foreground alternative
 ./setup install host --config ~/runner-host.toml # resume an existing layout
 ./setup install host --check --config ~/runner-host.toml # background access check
 ./setup host status --config ~/runner-host.toml

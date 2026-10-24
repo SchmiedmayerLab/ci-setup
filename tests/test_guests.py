@@ -66,6 +66,33 @@ class GuestConnectionTests(unittest.TestCase):
             connection.run(['command'], input='private-test-secret\n')
         self.assertNotIn('private-test-secret', str(caught.exception))
         self.assertNotIn('private-test-secret', str(self.run.call_args.args))
+
+    def test_exit_two_is_deferred_only_for_explicit_maintenance(self):
+        connection = guests.Connection(self.spec, self.entry)
+        self.run.side_effect = None
+        self.run.return_value = subprocess.CompletedProcess([], 2, 'private-test-secret', 'private-test-secret')
+        with self.assertRaises(guests.GuestCommandError) as ordinary:
+            connection.logged(['command'], '/example/log')
+        self.assertEqual(ordinary.exception.returncode, 2)
+        with self.assertRaises(host.HostBusy) as busy:
+            connection.logged(['maintenance'], '/example/log', defer_on_busy=True)
+        self.assertNotIn('private-test-secret', str(busy.exception))
+
+    def test_no_route_has_safe_background_permission_hint(self):
+        connection = guests.Connection(self.spec, self.entry)
+        self.run.side_effect = None
+        self.run.return_value = subprocess.CompletedProcess([], 255, 'private-test-secret',
+                                                            'No route to host private-test-secret')
+        with self.assertRaisesRegex(guests.GuestConnectionError, 'Local Network') as caught:
+            connection.run(['command'], input='private-test-secret\n')
+        self.assertNotIn('private-test-secret', str(caught.exception))
+
+    def test_remote_output_does_not_become_transport_diagnostic(self):
+        result = subprocess.CompletedProcess([], 1, '', 'No route to host')
+        self.assertIsNone(guests.check_transport(result))
+        with self.assertRaises(guests.GuestConnectionError):
+            guests.check_transport(subprocess.CompletedProcess([], 255, b'', b'No route to host'))
+
     def test_archive_transfer_streams_stdin_and_publishes_only_verified_bytes(self):
         import hashlib
         import shlex

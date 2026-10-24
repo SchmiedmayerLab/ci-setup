@@ -15,6 +15,7 @@
 # automatic recovery would be unsafe.
 #
 # Usage:
+#   ./setup prepare host           prepare interactively, then provision in background
 #   ./setup install runner         guided setup of a dedicated physical runner
 #   ./setup install host           guided setup of a host and runner VMs
 #   ./setup                        converge the machine (default)
@@ -60,7 +61,7 @@ fi
 if (( EUID == 0 )); then
   fail "do not run as root — the runner and its services are per-user"
 fi
-if [[ ${1:-} == install && ${2:-} == host ]] && (( ! SHOW_HELP )); then
+if [[ ( ${1:-} == install || ${1:-} == prepare ) && ${2:-} == host ]] && (( ! SHOW_HELP )); then
   [[ $(uname -m) == arm64 ]] || fail "macOS runner VMs require an Apple silicon host"
   RUNNER_HOST_VERSION=$(/usr/bin/sw_vers -productVersion)
   (( ${RUNNER_HOST_VERSION%%.*} >= 27 )) || fail "automatic guest setup requires macOS 27+ on the host; update macOS before installing prerequisites"
@@ -144,14 +145,17 @@ for arg in "$@"; do
     host|status|info|logs|compare|adopt|register|--check|--help|-h) READ_ONLY=1 ;;
   esac
 done
-if [[ ${1:-} == install ]] && (( ! SHOW_HELP )); then
+if [[ ${1:-} == install || ${1:-} == prepare ]] && (( ! SHOW_HELP )); then
+  if [[ ${1:-} == prepare ]]; then
+    [[ ${2:-} == host ]] || fail "usage: ./setup prepare host [options]"
+  fi
   [[ ${2:-} == runner || ${2:-} == host ]] || fail "usage: ./setup install {runner|host} [options]"
   export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
   # 'host' is otherwise an inspection command; guided installation needs the
   # shared foundation. A readiness check must never install prerequisites.
   READ_ONLY=0
   for arg in "$@"; do
-    [[ $arg != --check ]] || READ_ONLY=1
+    [[ $arg != --check && $arg != --prepared ]] || READ_ONLY=1
   done
 fi
 # Host bootstrap shares only the prerequisite installation below.
@@ -185,7 +189,7 @@ if ! /usr/bin/xcode-select -p &>/dev/null; then
   fi
   log "Xcode Command Line Tools are missing — requesting installation (GUI dialog)."
   /usr/bin/xcode-select --install || true
-  fail "re-run ./setup once the Command Line Tools installation has finished"
+  fail "finish Command Line Tools in Apple’s installer or System Settings > General > Software Update, verify xcode-select -p, then rerun this same command"
 fi
 
 # --- Homebrew ----------------------------------------------------------------

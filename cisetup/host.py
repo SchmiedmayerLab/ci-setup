@@ -35,17 +35,26 @@ CTL = UTM / 'Contents/MacOS/utmctl'
 STATE = Path.home() / 'Library/Application Support/runner-host'
 SCRIPT = ROOT / 'host/utm.applescript'
 LABEL = 'com.selfhosted-runner.virtual-machines'
+UNATTENDED = False
+DEFAULT_CPU_RATIO = 1.5
 
 
 class HostError(Exception):
     pass
 
 
+class HostBusy(HostError):
+    pass
+
+
 def command(args, *, timeout=60, input=None):
     """Bound every external operation; never echo stdin (which may be a password)."""
     try:
+        options = {'stdin': subprocess.DEVNULL} if UNATTENDED and input is None else {}
+        if UNATTENDED:
+            options['start_new_session'] = True
         result = subprocess.run([str(a) for a in args], input=input, text=True,
-                                capture_output=True, timeout=timeout)
+                                capture_output=True, timeout=timeout, **options)
     except subprocess.TimeoutExpired as error:
         raise HostError(f'{Path(args[0]).name} timed out; inspect UTM before retrying') from error
     if result.returncode or (str(args[0]) == str(CTL) and 'Error from event:' in result.stderr):
@@ -88,37 +97,50 @@ def runner_credentials(*, interactive=False):
     keychain = Path.home() / 'Library/Keychains/login.keychain-db'
     lookup = ['/usr/bin/security', 'find-generic-password', '-s', config.KEYCHAIN_SERVICE,
               '-w', str(keychain)]
+
+    def enter_token():
+        try:
+            entered = subprocess.run([str(ROOT / 'setup'), 'store-pat'], timeout=600)
+        except subprocess.TimeoutExpired:
+            raise HostError('Token entry timed out; no VMs were created') from None
+        if entered.returncode:
+            raise HostError('Token entry did not complete; no VMs were created')
+        cfg.pat = command(lookup, timeout=15)
+
     try:
         result = subprocess.run(lookup, capture_output=True, text=True, timeout=15)
     except subprocess.TimeoutExpired as error:
         raise HostError('Token lookup timed out; unlock the login Keychain and approve access') from error
     if result.returncode == 44 and interactive:
         print('GitHub access is needed before choosing runner names. Enter the token privately below.', flush=True)
-        try:
-            result = subprocess.run([str(ROOT / 'setup'), 'store-pat'], timeout=600)
-        except subprocess.TimeoutExpired as error:
-            raise HostError('Token entry timed out; no VMs were created') from error
-        if result.returncode:
-            raise HostError('Token entry did not complete; no VMs were created')
-        cfg.pat = command(lookup, timeout=15)
+        enter_token()
     elif result.returncode == 44:
         raise HostError('Store a scoped runner token privately with ./setup store-pat, then retry name discovery')
     elif result.returncode:
         raise HostError('Cannot read the token; unlock the login Keychain and approve access')
     else:
         cfg.pat = result.stdout.strip()
-    if not cfg.pat:
-        raise HostError('Stored token is empty; replace it privately with ./setup store-pat')
-    try:
-        # A successful list only proves read access. Mint and discard a short-lived
-        # registration token to verify write access without changing any runners.
-        github_api.registration_token(cfg)
-    except SetupError as error:
-        if isinstance(error, github_api.GitHubAPIError) and error.status == 401:
-            raise HostError('GitHub rejected the stored token (HTTP 401); replace the complete active token with ./setup store-pat') from error
-        permission = 'Self-hosted runners: write' if cfg.scope == 'org' else 'Administration: write'
-        raise HostError(f'Cannot obtain a registration token; check {permission}, token approval, expiration, and network access') from error
-    return cfg
+    for attempt in range(3):
+        if not cfg.pat:
+            raise HostError('Stored token is empty; replace it privately with ./setup store-pat')
+        try:
+            # Verify each entry before Apple authentication or provisioning.
+            # Mint and discard a short-lived token; never register a runner here.
+            github_api.registration_token(cfg)
+        except SetupError as error:
+            if isinstance(error, github_api.GitHubAPIError) and error.status == 401:
+                cfg.pat = None
+                if interactive and attempt < 2:
+                    print('GitHub rejected the token (HTTP 401). Enter a complete active token again; '
+                          'Ctrl-C cancels setup.', flush=True)
+                    enter_token()
+                    continue
+                raise HostError('GitHub rejected the stored token (HTTP 401); replace the complete active token with ./setup store-pat') from None
+            permission = 'Self-hosted runners: write' if cfg.scope == 'org' else 'Administration: write'
+            raise HostError(f'Cannot obtain a registration token; check {permission}, token approval, expiration, and network access') from None
+        if interactive:
+            print('GitHub token and runner-registration permission verified.', flush=True)
+        return cfg
 
 
 def discover_names(*, interactive=False):
@@ -200,8 +222,10 @@ def load(path):
     return result
 
 
-def resource_sizes(ram, cores, total_gib, free_gib, *, count=2, reserve_memory=8, cpu_ratio=1.0):
+def resource_sizes(ram, cores, total_gib, free_gib, *, count=2, reserve_memory=None, cpu_ratio=DEFAULT_CPU_RATIO):
     """Choose fixed sizes once; later runs use the saved configuration."""
+    if reserve_memory is None:
+        reserve_memory = min(16, max(8, ram // 4))
     if count not in (1, 2) or reserve_memory < 8 or not 1 <= cpu_ratio <= 2:
         raise HostError('Use one or two VMs, at least 8 GiB host RAM, and a CPU ratio from 1 to 2')
     memory = (ram - reserve_memory) // count
@@ -214,10 +238,9 @@ def resource_sizes(ram, cores, total_gib, free_gib, *, count=2, reserve_memory=8
     return {'cpus': cpus, 'memory_gib': memory, 'disk_gib': disk}
 
 
-def init_config(config, image, names, *, reserve_memory=8, cpu_ratio=1.0,
-                automatic_login=False, remote_login=False, confirm=None):
-    if config.exists():
-        raise HostError('Configuration already exists; it will not be overwritten')
+def plan_config(image, names, *, reserve_memory=None, cpu_ratio=DEFAULT_CPU_RATIO,
+                automatic_login=False, remote_login=False):
+    """Review resource and image selection without downloading or creating VMs."""
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise HostError('macOS guests require an Apple silicon Mac')
     if not 1 <= len(names) <= 2 or len({hostname(n) for n in names}) != len(names):
@@ -227,31 +250,66 @@ def init_config(config, image, names, *, reserve_memory=8, cpu_ratio=1.0,
     disk = shutil.disk_usage(Path.home())
     sizes = resource_sizes(ram, cores, disk.total // 1024**3, disk.free // 1024**3,
                            count=len(names), reserve_memory=reserve_memory, cpu_ratio=cpu_ratio)
-    image_url = None
+    plan = {'host': {'cpu_overcommit': cpu_ratio > 1},
+            'guest': {'username': 'runner', 'automatic_login': automatic_login, 'remote_login': remote_login},
+            'vm': [dict(sizes, name=name) for name in names]}
     if image is None:
         from . import restore
         info = restore.metadata()
-        restore.requirements(info, [dict(sizes, name=name) for name in names])
+        restore.requirements(info, plan['vm'])
+        plan['restore'] = info
         print(f'Selected macOS {info["version"]} ({info["build"]}) from Apple.', flush=True)
+    else:
+        image = image.expanduser().resolve()
+        plan['image'] = {'path': str(image), 'sha256': digest(image)}
+    return plan
+
+
+def materialize_config(config, plan):
+    """Download an approved image and publish its exact layout, never replace it."""
+    spec = {key: value for key, value in plan.items() if key != 'restore'}
+    if 'restore' in plan:
+        from . import restore
+        info = plan['restore']
+        image = restore.download(info).resolve()
+        spec['image'] = {'path': str(image), 'sha256': digest(image), 'url': info['url']}
+    if config.exists():
+        if load(config) != spec:
+            raise HostError('Existing configuration differs from the approved plan; inspect before retrying')
+        return spec
+    content = '[host]\ncpu_overcommit = ' + str(spec.get('host', {}).get('cpu_overcommit', False)).lower() + '\n\n[image]\n'
+    content += ''.join(f'{key} = {json.dumps(value)}\n' for key, value in spec['image'].items())
+    content += '\n[guest]\n'
+    for key, value in spec['guest'].items():
+        content += f'{key} = ' + (str(value).lower() if type(value) is bool else json.dumps(value)) + '\n'
+    for vm in spec['vm']:
+        content += '\n[[vm]]\n' + ''.join(f'{key} = {json.dumps(value)}\n' for key, value in vm.items())
+    # An interrupted publication either has no config or the complete approved
+    # config. The temporary is private and a concurrently created file wins.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=config.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, config)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return load(config)
+
+
+def init_config(config, image, names, *, reserve_memory=None, cpu_ratio=DEFAULT_CPU_RATIO,
+                automatic_login=False, remote_login=False, confirm=None):
+    if config.exists():
+        raise HostError('Configuration already exists; it will not be overwritten')
+    plan = plan_config(image, names, reserve_memory=reserve_memory, cpu_ratio=cpu_ratio,
+                       automatic_login=automatic_login, remote_login=remote_login)
     if confirm is not None:
-        confirm([dict(sizes, name=name) for name in names])
-    if image is None:
-        image = restore.download(info)
-        image_url = info['url']
-    image = image.expanduser().resolve()
-    print('Pinning the restore image checksum…', flush=True)
-    content = (f'[host]\ncpu_overcommit = {str(cpu_ratio > 1).lower()}\n\n'
-               f'[image]\npath = {json.dumps(str(image))}\nsha256 = "{digest(image)}"\n'
-               + (f'url = {json.dumps(image_url)}\n' if image_url else '') + '\n'
-               '[guest]\nusername = "runner"\n'
-               f'automatic_login = {str(automatic_login).lower()}\n'
-               f'remote_login = {str(remote_login).lower()}\n')
-    for name in names:
-        content += f'\n[[vm]]\nname = {json.dumps(name)}\n'
-        content += ''.join(f'{key} = {value}\n' for key, value in sizes.items())
-    with config.open('x') as file:
-        file.write(content)
-    print(f'Wrote {config}: {sizes} per guest. Review it, then run host create.')
+        confirm(plan['vm'])
+    materialize_config(config, plan)
+    print(f'Wrote {config}. Review it, then run host create.')
 
 
 def password_service(identifier):
@@ -410,13 +468,18 @@ def save_state(path, data):
 
 
 @contextmanager
-def locked():
+def locked(*, wait_timeout=0):
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    deadline = time.monotonic() + wait_timeout
     with (STATE / 'lock').open('a') as file:
-        try:
-            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise HostError('Another host operation is running') from error
+        while True:
+            try:
+                fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as error:
+                if time.monotonic() >= deadline:
+                    raise HostBusy('Another host operation is running; deferred without interrupting it') from error
+                time.sleep(1)
         yield
 
 
@@ -542,9 +605,9 @@ def login_agent(config, spec, path):
         raise HostError('Create and finish configuring all VMs before enabling login startup')
     check_owned(data, inventory())
     target = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
-    definition = {'Label': LABEL, 'RunAtLoad': True,
-                  'ProgramArguments': [sys.executable, str(ROOT / 'bin/ci-setup'),
-                                       'host', 'start', '--config', str(config)],
+    from . import background
+    definition = {'Label': LABEL, 'RunAtLoad': True, **background.properties(),
+                  'ProgramArguments': background.arguments(['host', 'start', '--config', str(config)]),
                   'StandardOutPath': str(STATE / 'login.log'), 'StandardErrorPath': str(STATE / 'login.log')}
     content = plistlib.dumps(definition)
     if target.exists():
@@ -575,8 +638,9 @@ def bootstrap():
 
 def main(argv):
     parser = argparse.ArgumentParser(prog='setup host', description=__doc__)
-    parser.add_argument('action', choices=['bootstrap', 'init', 'plan', 'create', 'configure', 'xcode-login', 'refresh-xcode', 'xcode-agent', 'start', 'status', 'login-agent', 'check', 'power'])
+    parser.add_argument('action', choices=['bootstrap', 'init', 'plan', 'create', 'configure', 'xcode-login', 'refresh-xcode', 'xcode-agent', 'start', 'status', 'progress', 'resume', 'login-agent', 'check', 'power'])
     parser.add_argument('--config', type=Path, default=Path.home() / 'runner-host.toml')
+    parser.add_argument('--json', action='store_true', help='progress: machine-readable worker state')
     parser.add_argument('--vm', help='configure: operate on only this configured VM name')
     parser.add_argument('--provision', action='store_true', help='create the guest account at first boot (macOS 27+)')
     parser.add_argument('--password-stdin', action='store_true', help='read the new guest password from a pipe; requires --provision')
@@ -584,12 +648,16 @@ def main(argv):
     parser.add_argument('--image', type=Path, help='init: optional local restore image; otherwise download the latest compatible image from Apple')
     parser.add_argument('--name', action='append', help='init: VM name; repeat for two guests')
     parser.add_argument('--discover-names', action='store_true', help='init: choose the two lowest unused GitHub Runner numbers using the stored token')
-    parser.add_argument('--reserve-memory-gib', type=int, default=8, help='init: host RAM reservation (default: 8)')
-    parser.add_argument('--cpu-ratio', type=float, default=1.0, help='init: CPU allocation multiplier, 1–2 (default: 1)')
+    parser.add_argument('--reserve-memory-gib', type=int,
+                        help='init: host RAM reserve (default: one quarter of RAM, minimum 8 GiB, maximum 16 GiB)')
+    parser.add_argument('--cpu-ratio', type=float, default=DEFAULT_CPU_RATIO,
+                        help='init: CPU allocation multiplier, 1–2 (default: 1.5; use 1 to avoid oversubscription)')
     parser.add_argument('--automatic-login', action='store_true', help='init: enable automatic guest login at first boot')
     parser.add_argument('--remote-login', action='store_true', help='init: enable guest SSH at first boot')
     parser.add_argument('--dedicated-host', action='store_true', help='power: confirm and apply AC system sleep and supported power-recovery settings')
     args = parser.parse_args(argv)
+    if args.json and args.action != 'progress':
+        parser.error('--json is only supported with progress')
     if args.dedicated_host and args.action != 'power':
         parser.error('--dedicated-host is only supported with power')
     if args.vm and args.action != 'configure':
@@ -603,13 +671,19 @@ def main(argv):
     if args.discover_names and (args.action != 'init' or args.name):
         parser.error('--discover-names is only supported with init and cannot be combined with --name')
     if args.action != 'init' and (args.image or args.name or args.automatic_login or args.remote_login
-                                  or args.reserve_memory_gib != 8 or args.cpu_ratio != 1.0):
+                                  or args.reserve_memory_gib is not None or args.cpu_ratio != DEFAULT_CPU_RATIO):
         parser.error('image, name, sizing, and login options are only supported with init; edit the config before create')
     try:
         if args.action == 'bootstrap':
             bootstrap()
             return 0
         config = args.config.expanduser().resolve()
+        if args.action in ('progress', 'resume'):
+            from . import preparation
+            if args.action == 'progress':
+                return preparation.show(config, as_json=args.json)
+            preparation.launch(config)
+            return 0
         if args.action in ('check', 'power'):
             from . import host_readiness
             if args.action == 'check':
@@ -642,14 +716,21 @@ def main(argv):
             return 0
         if args.action == 'status':
             data = read_state(path, spec)
+            from .preparation import snapshot
             print(json.dumps({
+                'provisioning': snapshot(config),
                 'state': data,
                 'utm': inventory(),
                 'runner_setup': 'unverified; run ./setup status inside each guest',
                 'phase_note': 'ready means macOS was installed and first boot was requested, not runner readiness',
             }, indent=2))
             return 0
-        with locked():
+        if args.action == 'refresh-xcode':
+            from .xcode_cache import wait_for_guests
+            # launchd gives RunAtLoad agents no ordering guarantee. Never hold
+            # the startup lock while waiting for the startup agent's guests.
+            wait_for_guests(spec, path)
+        with locked(wait_timeout=600 if args.action in {'start', 'refresh-xcode'} else 0):
             if args.action == 'create':
                 password = None
                 if args.password_stdin:
@@ -671,6 +752,9 @@ def main(argv):
             else:
                 login_agent(config, spec, path)
         return 0
+    except HostBusy as error:
+        print(f'host: {error}', file=sys.stderr)
+        return 2
     except (HostError, OSError, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException) as error:
         print(f'host: {error}', file=sys.stderr)
         return 1

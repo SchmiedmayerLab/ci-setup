@@ -8,6 +8,7 @@ SPDX-License-Identifier: MIT
 # Working on runner setup
 
 Read [the maintenance guide](docs/maintenance.md) and the relevant setup guide before editing.
+For a new VM host, also read [interactive preparation and background provisioning](docs/prepare.md).
 These instructions apply to automated contributors and people using scripting tools.
 
 Keep each Markdown prose sentence on one source line, with line breaks between sentences.
@@ -21,6 +22,10 @@ Preserve the required README sections and footers, and use the shared standards 
   Never run plain `./setup`, `install runner`, `converge` or `update` on a workstation or VM host.
   Use mocked tests, `host check`, the `host power` preview and `install host --check` there.
   Never apply `--dedicated-host` power settings on a workstation during validation.
+- Deploy only an approved, clean, signed revision and record it on the host and guests.
+  Use `prepare host` for the initial operator session, then `host progress --json` and `host resume` to follow or continue the saved plan.
+  Let the background worker perform provisioning; do not duplicate its steps or restart an active worker.
+  Treat `configured` as local setup completion, with real jobs, locked-session operation and restart recovery still requiring separate validation.
 - VM mutations must use the configured names and saved owned UUIDs.
   Never adopt, delete, replace, reset or stop unrelated VMs.
   Inspect interrupted state before retrying; do not remove state files to get past an ownership error.

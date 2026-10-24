@@ -383,6 +383,15 @@ _RAW_ARGV: list[str] = []
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["_host-probe"]:
+        from .install import probe
+        if len(argv) not in (3, 4) or argv[1] not in ('host', 'runner', 'guest'):
+            return 2
+        probe(argv[1], Path(argv[2]), Path(argv[3]) if len(argv) == 4 else None)
+        return 0
+    if argv[:1] == ["prepare"]:
+        from .preparation import main as prepare_main
+        return prepare_main(argv[1:])
     if argv[:1] == ["install"]:
         from .install import main as install_main
         return install_main(argv[1:])

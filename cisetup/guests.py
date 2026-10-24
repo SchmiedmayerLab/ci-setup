@@ -20,6 +20,31 @@ import time
 from . import host
 
 
+class GuestConnectionError(host.HostError):
+    """A fixed diagnostic without remote output, credentials or addresses."""
+
+
+class GuestCommandError(host.HostError):
+    """Retain a remote exit status without retaining private command output."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+        super().__init__(f'Guest SSH command failed (exit {returncode}); inspect the guest before retrying')
+
+
+def check_transport(result):
+    if result.returncode != 255:
+        return
+    error = result.stderr or ''
+    if isinstance(error, bytes):
+        error = error.decode('utf-8', errors='replace')
+    if 'no route to host' in error.lower():
+        raise GuestConnectionError(
+            'Guest SSH could not reach the guest (no route to host). '
+            'Check VM networking and Local Network permission for Runner Host (or Python for legacy agents); '
+            'foreground SSH success does not prove LaunchAgent access')
+
+
 class Connection:
     def __init__(self, spec, entry):
         if not spec['guest'].get('remote_login') or entry['phase'] != 'ready':
@@ -64,9 +89,10 @@ class Connection:
                                     env=self.environment, timeout=timeout, start_new_session=True)
         except subprocess.TimeoutExpired as error:
             raise host.HostError('Guest SSH command timed out; inspect guest state before retrying') from error
+        check_transport(result)
         if result.returncode:
             # Remote command output can contain a registration token or password.
-            raise host.HostError(f'Guest SSH command failed (exit {result.returncode}); inspect the guest before retrying')
+            raise GuestCommandError(result.returncode)
         return result.stdout.strip()
 
     def password(self):
@@ -79,10 +105,17 @@ class Connection:
         self.run(['/bin/sh', '-c', 'umask 077; /usr/bin/base64 -D > "$1"', 'upload', destination],
                  input=base64.b64encode(content).decode('ascii'), timeout=300)
 
-    def logged(self, arguments, log, *, input=None, timeout=7200):
+    def logged(self, arguments, log, *, input=None, timeout=7200, defer_on_busy=False):
         print(f'Guest log: {log}', flush=True)
-        self.run(['/bin/sh', '-c', 'umask 077; log=$1; shift; exec "$@" > "$log" 2>&1',
-                  'provision', log, *arguments], input=input, timeout=timeout)
+        try:
+            self.run(['/bin/sh', '-c', 'umask 077; log=$1; shift; exec "$@" > "$log" 2>&1',
+                      'provision', log, *arguments], input=input, timeout=timeout)
+        except GuestCommandError as error:
+            # Only known maintenance commands use exit 2 for deferral. Do not
+            # interpret a generic remote shell/transfer failure as busy work.
+            if defer_on_busy and error.returncode == 2:
+                raise host.HostBusy('Guest maintenance deferred: active jobs or another maintenance run; retry when idle') from None
+            raise
 
     def upload_file(self, source, destination, expected_digest):
         """Stream a large archive, verify it remotely, then publish atomically."""
@@ -124,6 +157,7 @@ finally:
                                         timeout=3600, start_new_session=True)
         except subprocess.TimeoutExpired as error:
             raise host.HostError('Xcode archive transfer timed out; retry configuration') from error
+        check_transport(result)
         if result.returncode:
             raise host.HostError('Xcode archive transfer failed; the previous archive was retained')
 
@@ -219,7 +253,7 @@ test "$(git -C "$checkout" rev-parse HEAD)" = "$revision"
                 token = None
             xcode_cache.stage(connection, archives, staging)
             connection.logged(['/bin/bash', script, '--converge', checkout],
-                              staging + '/converge.log', input=connection.password() + '\n', timeout=12 * 3600)
+                              staging + '/converge.log', input=connection.password() + '\n', timeout=12 * 3600, defer_on_busy=True)
             wait_for_runner(connection, checkout, name)
             state['vms'][name]['runner_revision'] = revision
             host.save_state(state_path, state)

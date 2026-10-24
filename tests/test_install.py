@@ -73,12 +73,28 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(events, ['prerequisites', 'host.runner_credentials', 'apple_access',
                                   'background_check', 'install_host'])
 
+    def test_guided_host_uses_adaptive_memory_and_oversubscribed_cpu_defaults(self):
+        self.flow()
+        plan = self.mock('host_plan', return_value=(self.root / 'host.toml', self.spec))
+        self.assertEqual(install.main(['host']), 0)
+        args = plan.call_args.args[0]
+        self.assertIsNone(args.reserve_memory_gib)
+        self.assertEqual(args.cpu_ratio, 1.5)
+
     def test_permission_failure_never_provisions(self):
         events = self.flow()
         self.mock('background_check', side_effect=host.HostError('permission denied'))
         with patch('builtins.input') as prompt:
             self.assertEqual(install.main(['host']), 1)
         self.assertNotIn('install_host', events)
+        prompt.assert_not_called()
+
+    def test_apple_verification_failure_stops_before_background_and_provisioning(self):
+        events = self.flow()
+        self.mock('apple_access', side_effect=host.HostError('Apple access unavailable'))
+        with patch('builtins.input') as prompt:
+            self.assertEqual(install.main(['host']), 1)
+        self.assertEqual(events, ['prerequisites', 'host.runner_credentials'])
         prompt.assert_not_called()
 
     def test_cancel_preserves_preparation_without_provisioning(self):
@@ -281,6 +297,21 @@ class InstallTests(unittest.TestCase):
         agent.assert_not_called()
         load.assert_not_called()
 
+    def test_verified_startup_finishes_before_refresh_can_take_host_lock(self):
+        self.mock('host.locked', return_value=nullcontext())
+        for name in ('host.create', 'host.start', 'wait_for_guests', 'guests.configure',
+                     'host.login_agent', 'xcode_cache.agent'):
+            self.mock(name)
+        self.mock('guests.connections', return_value=[])
+        events = []
+        self.mock('background.migrate_agents', side_effect=lambda *_: events.append('migrate'))
+        self.mock('load_agent', side_effect=lambda label, **kw: events.append(('load', label)))
+        self.mock('verify_agent', side_effect=lambda label, **kw: events.append(('verify', label)))
+        install.install_host(self.root / 'host.toml', self.spec, verify_agents=True)
+        refresh = 'com.selfhosted-runner.xcode-downloads'
+        self.assertEqual(events, ['migrate', ('load', host.LABEL), ('verify', host.LABEL),
+                                  ('load', refresh), ('verify', refresh)])
+
     def test_probe_never_records_secret_error_details(self):
         self.mock('host.runner_credentials', side_effect=host.HostError('private-test-token'))
         result = self.root / 'result.json'
@@ -299,6 +330,17 @@ class InstallTests(unittest.TestCase):
         inventory.assert_called_once()
         self.assertIn('osascript', str(command.call_args))
         self.assertEqual(json.loads(result.read_text()), {'ok': True})
+
+    def test_background_apple_failure_does_not_blame_only_credentials_or_leak_details(self):
+        self.mock('host.runner_credentials', return_value=self.cfg)
+        self.mock('apple_access', side_effect=host.HostError('synthetic-private-session-url'))
+        inventory = self.mock('host.inventory')
+        result = self.root / 'result.json'
+        install.probe('host', result)
+        self.assertEqual(json.loads(result.read_text()),
+                         {'ok': False, 'stage': 'Apple access (session, Keychain or network)'})
+        inventory.assert_not_called()
+        self.assertNotIn('synthetic-private', result.read_text() + self.out.getvalue())
 
     def test_background_agent_cleanup_after_failure(self):
         calls = []

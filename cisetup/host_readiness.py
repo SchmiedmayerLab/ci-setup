@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 
-from . import host
+from . import background, host
 
 POWER = {'sleep': '0', 'autorestart': '1'}
 REFRESH = 'com.selfhosted-runner.xcode-downloads'
@@ -114,12 +114,13 @@ def agent_check(label, action, config, disabled):
         definition = plistlib.loads(path.read_bytes())
     except (OSError, ValueError, plistlib.InvalidFileException):
         return ('ATTENTION', label, 'missing or unreadable agent; rerun guided host setup after inspection')
-    expected = [str(host.ROOT / 'bin/ci-setup'), 'host', action, '--config', str(config)]
+    expected = background.arguments(['host', action, '--config', str(config)])
     args = definition.get('ProgramArguments') if isinstance(definition, dict) else None
-    valid = (isinstance(args, list) and len(args) == 6 and all(isinstance(arg, str) for arg in args)
-             and args[1:] == expected and Path(args[0]).is_absolute() and os.access(args[0], os.X_OK)
+    valid = (isinstance(args, list) and all(isinstance(arg, str) for arg in args)
+             and args == expected and Path(args[0]).is_absolute() and os.access(args[0], os.X_OK)
              and definition.get('Label') == label and definition.get('RunAtLoad') is True
-             and not definition.get('Disabled', False))
+             and not definition.get('Disabled', False)
+             and all(definition.get(key) == value for key, value in background.properties().items()))
     if action == 'refresh-xcode':
         valid = valid and definition.get('StartInterval') == 21600
     if not valid:

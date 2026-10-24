@@ -19,8 +19,9 @@ Do not run plain `./setup` on a host that also serves as a workstation.
 
 ## Guided setup
 
-For a new installation, follow the [setup guide](setup.md) and run `./setup install host`.
-It performs the preparation, creation, guest configuration and agent installation described below in one flow.
+For a new installation, follow the [setup guide](setup.md) and run `./setup prepare host --dedicated-host` on a dedicated host.
+It collects the initial prompts and hands creation, guest configuration and agent installation to a persistent worker; see [preparation and progress](prepare.md).
+The foreground `install host` command remains available as an alternative.
 Use the individual commands in this reference for inspection or recovery.
 
 ## Prepare the host
@@ -75,6 +76,12 @@ Preserve the image and host configuration for rebuilds; old Apple download URLs 
 
 ## Host readiness and power settings
 
+The read-only `host check` and `host power` commands require an existing Python 3.11+ and do not install it.
+Command Line Tools alone may provide an older Python.
+On a fresh Mac, let `./setup install host` obtain its prerequisites, or use `./setup host bootstrap` first if you need the standalone power preview before guided installation.
+Bootstrap installs dependencies, including UTM, without creating guests or applying host power settings.
+Before changing power settings, retain the preview and its restoration command as described below.
+
 Inspect an existing host without starting UTM, accessing credentials, installing agents or changing settings:
 
 ```sh
@@ -128,7 +135,7 @@ These settings are not enforced by a recurring privileged service; rerun the rea
 | Power and sleep | Use a reliable power connection and either UTM's sleep-prevention preference or the reviewed dedicated-host option. Display sleep and screen locking can stay enabled. Laptop lid closure, explicit sleep and loss of power can still interrupt VMs. |
 | Power-failure recovery | The dedicated-host option enables supported restart behavior. This starts the Mac; it does not unlock FileVault or log in the host user. |
 | Startup | Guided setup installs and loads the VM-start and Xcode-refresh agents for the host user. Confirm them with `host check`; this replaces separate Dock login items or launcher applications. |
-| Permissions and credentials | Complete UTM first launch, Automation and Keychain consent while unlocked. Guided setup checks background access. Renew expired PATs and Apple authentication when required; keep secrets out of logs and configuration. |
+| Permissions and credentials | Complete UTM first launch, Automation and Keychain consent while unlocked. Guided setup checks background credentials and UTM access; verify actual guest SSH through the installed refresh agent after provisioning. Renew expired PATs and Apple authentication when required; keep secrets out of logs and configuration. |
 | Login and restart recovery | Keep the host user logged in; locking the screen is supported. After a cold boot, unlock FileVault and log in, then check host readiness, guest startup and runner availability. Test this during a planned maintenance window. |
 | Host and UTM updates | Pause new jobs through the runner group's normal administration process, wait for active jobs and maintenance to finish, then shut down owned guests before updating or rebooting. After login, check both guests and run a validation job before restoring normal scheduling. Setup does not orchestrate host updates or restart crashed VMs. |
 | Configuration and backups | Keep the checkout and its interpreter at stable paths outside protected user folders. Back up the saved layout, ownership state and credentials through the normal secure backup process. A layout alone cannot recover passwords or irreplaceable guest files; setup does not create backups. |
@@ -179,13 +186,14 @@ Names are a point-in-time selection, not a reservation across hosts; provision o
 It never overwrites a configuration or creates VMs.
 For two guests it:
 
-- Divides RAM after reserving 8 GiB for the host.
-  Use `--reserve-memory-gib 16` on a workstation that also runs other applications.
-- Divides all but two host CPU cores.
-  `--cpu-ratio 1.5` allocates 50% more vCPUs and records explicit CPU oversubscription in the configuration.
-  On an 18-core host this gives 12 vCPUs per guest instead of 8.
+- Divides RAM after reserving one quarter for the host, rounded down to whole GiB, with a minimum reserve of 8 GiB and maximum of 16 GiB.
+  A 32 GiB Mac gets 12 GiB per guest, a 48 GiB Mac gets 18 GiB, and a 64 GiB Mac gets 24 GiB.
+  `--reserve-memory-gib` overrides this default; memory pressure and swap under concurrent workloads determine whether more host headroom is needed.
+- Subtracts two host CPU cores for a baseline, applies the default `--cpu-ratio 1.5`, then divides the vCPUs between guests.
+  This allocates 50% more vCPUs than the baseline and records `cpu_overcommit = true` in the configuration.
+  On an 18-core host this gives 12 vCPUs per guest; `--cpu-ratio 1` instead selects 8 per guest and records no CPU oversubscription.
   A busy guest can use more cores when the other is idle; simultaneous builds share the same real CPU capacity and may suffer additional contention.
-  Measure both build latency and combined throughput before increasing it further.
+  Measure both build latency and combined throughput to validate the default or before increasing it further.
 - Rounds disk capacity down in 128 GiB steps, capped at 512 GiB per guest.
   It reserves 128 GiB of host disk capacity and at least 64 GiB of current free space.
   A mostly empty 1 TB host gets 384 GiB per guest; 2 TB or larger gets 512 GiB.
@@ -327,9 +335,17 @@ When using individual commands, after both guests finish configuration, enable t
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.selfhosted-runner.xcode-downloads.plist
 ```
 
-The agent runs in the existing host login session, including while the screen is locked.
+The agent is scheduled in the existing host login session, including while the screen is locked; actual guest access still needs to pass from that background context.
 It requires prior Keychain authorization and a usable Apple session; it cannot bypass a locked Keychain or Apple's two-factor challenge.
 Failures are recorded in `~/Library/Application Support/runner-host/xcode-refresh.log`.
+Verify an actual refresh from the installed LaunchAgent after provisioning; the initial credential/UTM probe does not test guest network access.
+A foreground SSH success is not proof of background access.
+If background SSH reports “No route to host”, check the owned guest's networking and System Settings → Privacy & Security → Local Network for the interpreter running the agent.
+Apple's [local network privacy guidance](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy) explains that login agents and terminal commands can have different access.
+On the fresh macOS 27.0.1 validation host, bare Python failed despite appearing enabled; the shared **Runner Host** app passed the background guest connection check after normal consent.
+Use `prepare host` to establish that app identity and its permissions before handoff.
+Do not bypass privacy controls or disable the firewall to make the check pass.
+Archive-staging failures happen before guest maintenance and cannot be diagnosed using an old guest converge log alone.
 Guest maintenance acquires its existing lock and defers active runner jobs.
 Sleeping, logged-out, and powered-off hosts cannot run this login agent.
 For initial provisioning, `host configure --vm "GitHub Runner 1"` limits work to one guest.
@@ -344,8 +360,14 @@ That layout stores its GitHub and Apple credentials in the guest.
 
 After setup, check `./setup status` inside both guests and their online state in GitHub.
 Restart each guest and verify automatic login and runner recovery.
-The included `Runner validation` workflow accepts both runner names, tests a Swift package, compiles a Metal shader, and boots one temporary simulator for each of iOS, tvOS, watchOS and visionOS.
+Follow the [completion checklist](setup.md#completion-checklist), including the installed refresh agent and real GitHub jobs, before declaring the host fully validated.
+Measure host memory pressure, compression and swap during representative concurrent workloads; a short smoke test is not a guarantee that a fixed reserve prevents pressure under all builds.
+The included `Runner validation` workflow accepts both runner names, tests a Swift package, compiles and executes a Metal shader with checked results, and boots one temporary simulator for each of iOS, tvOS, watchOS and visionOS.
 It must be published before GitHub can dispatch it; local VM checks do not substitute for a successful workflow run.
+The cleanup probe invokes the configured completed hook on disposable job fixtures, including hidden files, interrupted-job leftovers, control files and a symlink to a newly created outside sentinel.
+Run it on the owned validation runners: the hook cleans their job workspace and resets simulators; the probe retains its outside sentinel for inspection.
+Invalid paths, setup-lock contention and an injected short deadline must fail before deleting the fixtures.
+Set `validation_hold_seconds` from 0 to 300 to keep the job active while checking that maintenance defers it.
 
 For a smoke test without runner registration or Xcode downloads, run `./setup host bootstrap` **inside a fresh guest**, then run it again.
 This checks prerequisite installation and rerun behavior.
@@ -363,7 +385,8 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.selfhosted-runner.
 ```
 
 Do this first load while the host is unlocked.
-Allow Python to control UTM when macOS asks: a background job has its own Automation permission, separate from your terminal.
+For a prepared host, allow **Runner Host** to control UTM when macOS asks.
+Legacy direct-Python agents have separate Automation and Local Network attribution; Terminal access alone does not prove their background access.
 Check the agent's log below and use `launchctl print "gui/$(id -u)/com.selfhosted-runner.virtual-machines"` to confirm that its last exit code is zero.
 Do not load an already loaded agent again; use `./setup host start --config ~/runner-host.toml` for later manual starts.
 
@@ -400,3 +423,23 @@ The scripts deliberately provide no one-command destructive rebuild.
 
 UTM documents [macOS VM creation](https://docs.getutm.app/scripting/cheat-sheet/), [installation and first-boot provisioning](https://docs.getutm.app/scripting/reference/), and [host sleep behavior](https://docs.getutm.app/preferences/macos/).
 The two-guest layout also needs to fit the macOS license applicable to your installation; consult [Apple's software license agreements](https://www.apple.com/legal/sla/).
+
+
+## Login startup ordering
+
+macOS may launch the VM-start and Xcode-refresh agents in either order at login.
+Refresh waits up to ten minutes for the owned guests and SSH without holding the host orchestration lock, so it cannot prevent VM startup.
+VM startup and, after guest readiness, Xcode refresh can wait up to ten minutes for an existing host operation to release that lock without interrupting it.
+Refresh never starts stopped VMs itself; if they remain unavailable, it returns deferred status 2 and leaves ownership, disks and registrations unchanged.
+The periodic refresh schedule can try later; after correcting a startup failure, explicitly retry the existing managed agents.
+
+For restart validation, record the host boot time and runner identities before restarting, then inspect both agent exit states, owned VM states and runner health after FileVault unlock and login.
+Do not manually start guests before recording the automatic-recovery result.
+A refresh error saying a guest must be running together with a startup lock-conflict error indicates the ordering race found in the fresh-host test.
+Do not delete a lock or ownership state to work around it.
+A successful manual recovery does not count as a passed cold-start test; repeat the coordinated restart after deploying the fix.
+
+Guest startup maintenance can also overlap host refresh after login.
+A guest maintenance exit status of 2 means it preserved an active job or another maintenance run.
+The host continues checking the other guest and returns deferred status 2 if there are no actual failures; a real failure still returns 1.
+Wait for the competing work, then retry refresh without stopping jobs or removing locks.
