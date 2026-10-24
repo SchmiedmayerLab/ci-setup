@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -21,6 +21,41 @@ from .util import SetupError, output, warn
 # `./setup store-pat` saves the PAT under this Keychain service name and
 # converge picks it up automatically.
 KEYCHAIN_SERVICE = "github-runner-pat"
+
+
+def _name_path() -> Path:
+    from .util import STATE_DIR
+    return STATE_DIR / "runner-name"
+
+
+def validate_runner_name(name: str) -> str:
+    if not isinstance(name, str) or not 1 <= len(name) <= 64 or name != name.strip() or not name.isprintable() or ',' in name:
+        raise SetupError("runner name must contain 1–64 printable characters without commas or surrounding whitespace")
+    return name
+
+
+def saved_runner_name() -> str | None:
+    path = _name_path()
+    if not path.exists():
+        return None
+    if path.stat().st_size > 256:
+        raise SetupError("saved runner name is unexpectedly large")
+    return validate_runner_name(path.read_text().removesuffix("\n"))
+
+
+def save_runner_name(name: str) -> None:
+    """Keep provisioned identity outside the checkout, without replacing it."""
+    name = validate_runner_name(name)
+    existing = saved_runner_name()
+    if existing is not None:
+        if existing != name:
+            raise SetupError("a different runner name is already saved; explicit migration is required")
+        return
+    path = _name_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('x') as file:
+        file.write(name + "\n")
+    path.chmod(0o600)
 
 
 @dataclass
@@ -47,7 +82,7 @@ class Config:
 
     # [xcode]
     xcode_manage: bool = True
-    xcode_install_beta: bool = True
+    xcode_install_beta: bool = False
     xcode_platforms: list[str] = field(default_factory=lambda: ["all"])
 
     # [brew]
@@ -157,8 +192,11 @@ def load(repo_root: Path) -> Config:
         )
 
     default_name = socket.gethostname().split(".")[0] or "mac-runner"
-    cfg.runner_name = _str(runner, "name", "runner.name") or default_name
+    local_name = saved_runner_name()
+    cfg.runner_name = local_name or _str(runner, "name", "runner.name") or default_name
     cfg.labels = _str_list(runner.get("labels", []), "runner.labels")
+    if local_name and local_name not in cfg.labels:
+        cfg.labels.append(local_name)
     cfg.runner_dir = Path(
         os.path.expanduser(_str(runner, "dir", "runner.dir", "~/actions-runner"))
     )
@@ -177,7 +215,7 @@ def load(repo_root: Path) -> Config:
     cfg.cleanup_hooks = bool(runner.get("cleanup_hooks", True))
 
     cfg.xcode_manage = bool(xcode.get("manage", True))
-    cfg.xcode_install_beta = bool(xcode.get("install_beta", True))
+    cfg.xcode_install_beta = bool(xcode.get("install_beta", False))
     cfg.xcode_platforms = _str_list(xcode.get("platforms", ["all"]), "xcode.platforms")
 
     cfg.brew_extra_formulae = _str_list(brew.get("extra_formulae", []), "brew.extra_formulae")
@@ -203,7 +241,11 @@ def load(repo_root: Path) -> Config:
     # Keep machine-specific legacy paths/identity outside the Git checkout so
     # adopting an existing runner does not prevent subsequent source updates.
     from . import adoption
-    return adoption.apply(cfg)
+    cfg = adoption.apply(cfg)
+    if cfg.cleanup_hooks:
+        from .cleanup import work_path
+        work_path(cfg)
+    return cfg
 
 
 def resolve_pat(cfg: Config) -> str | None:

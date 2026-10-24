@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -22,14 +22,12 @@ permissions:
   contents: read
 
 jobs:
-  reuse:
-    name: REUSE Compliance Check
-    uses: SchmiedmayerLab/.github/.github/workflows/reuse.yml@v0.5
-    permissions:
-      contents: read
   python:
     name: Python Checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,12 +35,37 @@ jobs:
           python-version: "3.13"
       - name: flake8 (error-class checks)
         run: |
-          pip install flake8
-          flake8 --select=F,E9 cisetup tests bin/ci-setup
+          pip install flake8 coverage
+          flake8 --select=F,E9 cisetup tests bin/ci-setup bin/check-docs bin/runner-cleanup
       - name: Unit tests
-        run: python3 -m unittest discover -s tests -v
+        run: |
+          coverage run --source=cisetup -m unittest discover -s tests -v
+          coverage xml
+      - name: Upload coverage
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.xml
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: true
+      - name: Documentation links
+        run: python3 bin/check-docs
       - name: zsh syntax check
         run: |
           sudo apt-get update -q
           sudo apt-get install -qy zsh
-          zsh -n setup
+          zsh -n setup host/ssh-askpass
+          bash -n host/bootstrap-guest.sh
+          bash -n hooks/job-started.sh hooks/job-completed.sh
+  restore-helper:
+    name: Restore Image Helper
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and verify the Apple metadata helper
+        run: |
+          restore_helper="$RUNNER_TEMP/restore-image"
+          xcrun swiftc host/restore-image.swift -o "$restore_helper"
+          codesign --sign - --entitlements host/restore-image.entitlements "$restore_helper"
+          codesign --verify --strict "$restore_helper"

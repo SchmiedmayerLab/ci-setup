@@ -1,6 +1,6 @@
 <!--
 
-This source file is part of the SchmiedmayerLab ci-setup open-source project
+This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 
 SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 
@@ -10,98 +10,71 @@ SPDX-License-Identifier: MIT
 
 # macOS Self-Hosted GitHub Actions Runner
 
-Everything needed to turn a **fresh macOS install** into a self-hosted GitHub
-Actions CI runner. Clone this repo onto a dedicated runner Mac and run the
-setup there. **Do not run setup on a developer workstation**: it installs and
-registers a runner, changes system settings, and enables destructive job cleanup.
-A LaunchAgent checks for updates at login and every six hours.
+[![Build and Test](https://github.com/SchmiedmayerLab/ci-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/SchmiedmayerLab/ci-setup/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/SchmiedmayerLab/ci-setup/branch/main/graph/badge.svg)](https://codecov.io/gh/SchmiedmayerLab/ci-setup)
+[![REUSE status](https://api.reuse.software/badge/github.com/SchmiedmayerLab/ci-setup)](https://api.reuse.software/info/github.com/SchmiedmayerLab/ci-setup)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 
-## What a converged machine has
+Set up a dedicated physical runner or an Apple silicon host with runner VMs.
+Start in Terminal while logged in and unlocked. Review the destination and
+settings in `config.toml`, then choose one command:
+
+```sh
+# Dedicated physical runner
+./setup install runner
+
+# Host with two runner VMs
+./setup install host
+```
+
+**Use `install runner` only on a dedicated runner machine.** It installs tools,
+registers a runner, applies machine settings and enables job cleanup. The host
+layout installs UTM if missing, downloads compatible macOS from Apple, and
+provisions the runners inside owned VMs. Host security settings are preserved.
+
+The guided commands collect credentials, check background permissions and show
+the plan before provisioning. They reuse saved configuration when rerun.
+See the [setup guide](docs/setup.md) for prerequisites, token scopes, unattended
+operation and the steps that still require a person. The
+[host reference](docs/hosts.md) documents individual VM commands and resource choices.
+
+## What gets installed
 
 - **GitHub Actions runner**: latest release, registered to your repo/org,
   running as a per-user launchd service, kept up to date.
 - **Toolchain** (Homebrew): openjdk (java), firebase-cli, fastlane, node,
   xcbeautify, git-lfs, aria2, xcodes, jq, python3, swiftlint, periphery —
   plus xcpretty (Ruby user gem; it has no Homebrew formula).
-- **Xcode**: the newest stable release, the newest release of the previous
-  minor train, and (if newer than stable) the newest beta/RC — each with
-  simulator runtimes, SDKs and (Xcode 26+) the Metal toolchain.
+- **Xcode**: only the newest release or Release Candidate, with all platform SDKs,
+  simulator runtimes and (Xcode 26+) the Metal toolchain. Newer betas are opt-in.
 - **Job environment**: CI jobs automatically get Homebrew on `PATH`,
-  `JAVA_HOME`/`LANG`/`LC_ALL`, and the latest stable Xcode via
+  `JAVA_HOME`/`LANG`/`LC_ALL`, and the latest release or RC of Xcode via
   `DEVELOPER_DIR` — configured through the runner's `.env`/`.path` files
   (the runner's own mechanism for injecting env/PATH into every job).
-  The global `xcode-select` also tracks the latest stable Xcode, and
+  The global `xcode-select` also tracks the latest release or RC of Xcode, and
   Apple's WWDR intermediate certificate is installed for code signing.
-- **Boot agent**: a LaunchAgent that re-runs the whole setup at every login,
-  unattended and sudo-free.
+- **Maintenance**: per-user LaunchAgents run at login and every six hours.
+  Runner maintenance defers active jobs. VM hosts download Xcode and distribute
+  it to their guests; physical runners download it locally. See
+  [background services](docs/setup.md#background-services) for startup and login requirements.
 
-## Setting up a new runner Mac
+## Verify the result
 
-Step 1 happens once in GitHub; everything else on the Mac (Terminal.app on the
-machine itself or via Screen Sharing — launchd agents cannot be loaded over
-plain SSH).
+For a physical runner, use `./setup status` and confirm that the runner appears
+as **Idle** in the destination's **Settings → Actions → Runners**. For a VM host,
+use `./setup host status --config ~/runner-host.toml` and check both registered
+runners. See the [setup guide](docs/setup.md) for background access checks and logs.
 
-1. Create a PAT that can manage self-hosted runners:
-   classic PAT with `repo` scope (repo-level runner) or `admin:org`
-   (org-level); fine-grained PAT with repo **Administration: write** or org
-   **Self-hosted runners: write**.
-2. Have an **Apple ID** ready (a free developer account is enough) — `xcodes`
-   needs it to download Xcode. Complete 2FA interactively when requested;
-   Apple may require verification again when its session expires. The Mac
-   does not need to be signed into iCloud.
-3. Clone this repo (the `git clone` triggers the Xcode Command Line Tools
-   install dialog on a fresh machine — accept it, then clone again):
-
-   ```sh
-   git clone https://github.com/SchmiedmayerLab/ci-setup.git ~/ci-setup
-   cd ~/ci-setup
-   ```
-
-4. Check `config.toml` (committed with the repo, shared by every runner Mac —
-   it targets the SchmiedmayerLab org and holds no secrets; runner names
-   default to each machine's hostname). Usually nothing to change here.
-
-5. Store the PAT in the Keychain:
-
-   ```sh
-   ./setup store-pat
-   ```
-
-   `store-pat` needs nothing but macOS itself (no Homebrew/python bootstrap),
-   so this works first thing on a factory-fresh machine. Run it bare to see
-   the PAT requirements.
-
-6. Run the setup (expect a long first run — Xcode + simulators are tens of
-   GB; keep ~150 GB of disk free):
-
-   ```sh
-   ./setup
-   ```
-
-   The first run will interactively ask for: your Apple ID (Xcode downloads
-   via `xcodes`, including 2FA; credentials/session are retained by `xcodes`), and possibly sudo
-   for Xcode's first-launch package installation.
-
-7. Enable **auto-login** for this user (System Settings → Users & Groups →
-   Automatically log in as…; requires FileVault to be off). The runner and
-   the boot agent are per-user LaunchAgents — they start at login, so the
-   machine must log in by itself after a reboot/power failure.
-
-Verify: the runner shows as *Idle* under the repo/org's
-**Settings → Actions → Runners**, and `./setup status` shows the service
-running and the latest maintenance result.
-
-## How re-running works (idempotency)
+## Existing runners and maintenance
 
 ### Migrating an existing runner without GitHub tokens
 
-For an existing installation such as `StanfordBDHG/ContinuousIntegration`,
-clone this repository into a separate `~/ci-setup` directory on the runner
-VM. Keep the existing runner directory and registration intact. Once the
-desired branch is checked out, run as the same logged-in runner user:
+For an existing runner installation, clone this repository into a separate
+`~/runner-setup` directory on the runner. Keep its runner directory and
+registration intact. From the new checkout, run as the same logged-in runner user:
 
 ```sh
-cd ~/ci-setup
+cd ~/runner-setup
 ./setup adopt ~/runner --skip-xcode
 ./setup info
 ```
@@ -139,14 +112,15 @@ old cleanup scripts, or any credential files.
 
 ### Regular maintenance
 
-`./setup` (command `converge`, the default) converges every phase and
-skips whatever is already correct:
+On a dedicated runner, `./setup` (the default `converge` command) checks each
+phase and applies needed changes. On a VM host, use the
+[host commands](docs/hosts.md#configure-each-runner) instead.
 
 | Phase | Re-run behaviour |
 |---|---|
 | Homebrew packages | refreshes metadata, installs/upgrades each managed package independently; reports outdated pinned formulae without changing the pins |
 | Passwordless xcode-select | sudoers rule (`/etc/sudoers.d/xcode`) installed on the first interactive run: `sudo xcode-select -s` and `sudo xcodebuild -runFirstLaunch` work without a password — for CI jobs and for unattended converges finishing a new Xcode's first-launch setup |
-| Xcode releases | installs stable/previous/beta versions and requested components; only selects a ready stable release and cleans up after successful preparation; retains the Xcode still referenced by the runner environment until a later pass |
+| Xcode releases | installs the newest release or RC and requested components; selects it only after successful preparation; retains the Xcode still referenced by the runner environment until a later pass |
 | Runner software | updates when a newer release exists (checksum-verified); the runner also self-updates between runs |
 | Registration | re-registers only when `config.toml` changed (name/labels/URL/group/work dir); otherwise untouched |
 | Job env (`.env`/`.path`) | rewritten only on change; a persisted restart marker survives an interrupted update |
@@ -200,9 +174,9 @@ can legitimately be quiet.
 `converge` installs `~/Library/LaunchAgents/com.selfhosted-runner.setup.plist`,
 which runs `setup converge --non-interactive` at every login **and every
 6 hours**, so long-lived login sessions still pick up new Xcode releases,
-runner updates, and config changes. No quiet-hour scheduling is needed (the
-team spans too many time zones for one to exist): the entire maintenance pass
-defers while a job is running and pauses intake while changing the machine.
+runner updates, and config changes. Maintenance defers while a job is running
+and pauses intake while changing the machine. Guests provisioned by the host
+use its staged Xcode catalog; the host refresh agent supplies newer builds.
 Unattended runs first fast-forward the checkout's configured Git upstream,
 then re-execute if the source changed. A dirty checkout, missing upstream,
 divergence, or pull failure is reported; automatic runs still attempt local
@@ -222,6 +196,19 @@ active agent requires a subsequent manual converge to unload its old schedule.
 
 ## Commands
 
+Initial setup and host inspection:
+
+```sh
+./setup install runner
+./setup install host
+./setup install host --config ~/runner-host.toml # resume an existing layout
+./setup install host --check --config ~/runner-host.toml # background access check
+./setup host status --config ~/runner-host.toml
+./setup host --help
+```
+
+Run these on a dedicated runner, including inside a configured VM:
+
 ```sh
 ./setup                # converge (default)
 ./setup update         # fast-forward source, restart if changed, converge/reload boot agent
@@ -233,7 +220,6 @@ active agent requires a subsequent manual converge to unload its old schedule.
 ./setup status --json  # read-only comparable inventory
 ./setup compare /tmp/other-runner.json # nonzero if different or incomplete
 ./setup store-pat      # print PAT requirements, prompt for it (hidden)
-./setup store-pat TOKEN  # store the given PAT directly
 ./setup uninstall      # deregister runner, remove services (asks first)
 ./setup converge --skip-xcode   # useful while iterating
 ```
@@ -291,9 +277,9 @@ different failures. Export inventories to check the actual state. For example,
 these commands execute setup **on the runners via SSH**:
 
 ```sh
-ssh ci@LukasMBPM1.local 'cd ~/ci-setup && ./setup status --json' > /tmp/m1-inventory.json
-scp /tmp/m1-inventory.json ci@LukasMBPM4.local:/tmp/m1-inventory.json
-ssh ci@LukasMBPM4.local 'cd ~/ci-setup && ./setup compare /tmp/m1-inventory.json'
+ssh runner@github-runner-1.local 'cd ~/runner-setup && ./setup status --json' > /tmp/runner-1.json
+scp /tmp/runner-1.json runner@github-runner-2.local:/tmp/runner-1.json
+ssh runner@github-runner-2.local 'cd ~/runner-setup && ./setup compare /tmp/runner-1.json'
 ```
 
 Comparison includes setup commit/config, macOS build/architecture, runner
@@ -305,31 +291,25 @@ the run summary; `status --json` takes a fresh snapshot.
 
 ## Apple authentication for Xcode downloads
 
-Use a dedicated CI Apple Account and complete its normal password/2FA flow
-interactively on each runner. `xcodes` reuses authentication when Apple accepts
-the cached session. When unattended authentication fails, run `./setup`
-interactively **on that runner** and complete verification. Session validity
-is controlled by Apple; this cannot guarantee unattended downloads forever.
+For the VM layout, authenticate **on the host**. For a physical runner,
+authenticate on that runner. Guided setup does this before provisioning.
+To renew an expired session, open Terminal on the downloading machine and run:
 
-`xcodes` 2.1.0 has no CLI session-validation command or flag to require an
-existing valid session without attempting login. Its underlying authentication
-library has a validate-only API, but setup does not currently integrate it.
-In particular, one phone-selection prompt retries on EOF; supplying no stdin
-does not guarantee an immediate authentication failure. The install deadline
-bounds that case, but is not an early 2FA detector. See the upstream
-[CLI definition](https://github.com/XcodesOrg/xcodes/blob/2.1.0/Sources/xcodes/App.swift),
-[session validation](https://github.com/XcodesOrg/XcodesLoginKit/blob/929f9aac3140caf7b64cbb5385f4f645c5f9913d/Sources/XcodesLoginKit/Client.swift#L413-L419),
-and [phone-selection implementation](https://github.com/XcodesOrg/xcodes/blob/2.1.0/Sources/XcodesKit/TwoFactorAuthentication.swift#L101-L114).
+```sh
+./setup host xcode-login
+```
 
-App-specific passwords and App Store Connect API keys do not authenticate
-Xcode downloads ([xcodes maintainer explanation](https://github.com/XcodesOrg/xcodes/issues/293#issuecomment-2074920422)).
-Accounts created with 2FA cannot disable it ([Apple documentation](https://support.apple.com/en-us/102660)).
-App Store/TestFlight upload authentication is separate: workflows can use an
-App Store Connect API key for those operations.
+This command only handles Apple login; it does not install UTM or create VMs.
+xcodes retains the account, Keychain password and session. Apple may still request
+a new two-factor code or agreement. After signing in, rerun
+`./setup host refresh-xcode --config ~/runner-host.toml` on a VM host, or
+`./setup install runner` on a physical runner.
 
-Downloads remain automatic and direct from Apple. No intermediate XIP hosting
-or manually maintained release mirror is required. An authentication failure
-leaves installed Xcodes available and appears in the run's failure summary.
+Only Xcode archives and checksums are transferred to provisioned guests. They
+receive neither the host's Apple credentials nor its GitHub PAT. The host cache
+supports later rebuilds; Xcode still comes directly from Apple. Failed downloads
+leave the installed toolchain available. See [Apple authentication and caching](docs/hosts.md#apple-authentication-and-xcode-refresh)
+for storage locations and background operation.
 
 ## Per-job cleanup
 
@@ -337,13 +317,41 @@ The runner runs two hook scripts around every job (wired via
 `ACTIONS_RUNNER_HOOK_JOB_STARTED`/`_COMPLETED` in the runner's `.env`;
 disable with `runner.cleanup_hooks = false` in `config.toml`):
 
-- [`hooks/job-started.sh`](hooks/job-started.sh) — shuts down and erases all
-  simulators so every job starts from a pristine device state, and exports
-  `selfhosted=true` into `$GITHUB_ENV` so workflows can detect the
-  self-hosted runner (`if: env.selfhosted == 'true'`).
-- [`hooks/job-completed.sh`](hooks/job-completed.sh) — wipes the runner's
-  work directory (all checkouts and build products), clears Periphery's
-  cache, and resets the simulators again.
+- [`hooks/job-started.sh`](hooks/job-started.sh) removes leftover job contents,
+  including hidden files, clears Periphery's cache and resets simulators. Cleaning
+  before the job also recovers from a previous crash or interrupted post-job hook.
+  On success it exports `selfhosted=true` into `$GITHUB_ENV`.
+- [`hooks/job-completed.sh`](hooks/job-completed.sh) performs the same cleanup
+  after workflow steps and their post-job actions have finished.
+
+Both hooks verify the work directory against setup configuration, the runner's
+registration and the job environment. Cleanup rejects root/home/installation
+targets, paths containing the setup checkout, parent traversal, symlinked target
+directories and filesystem boundaries. Symlinks inside disposable job contents
+are unlinked without following their targets. A former work directory is retained
+for inspection when registration changes its location.
+
+GitHub prepares actions and command files before the start hook and still needs
+them during the end hook. Both hooks retain `_actions`, `_temp`, `_tool` and
+`_PipelineMapping`, plus the current workspace directories. They remove the job
+contents within those workspace directories. Files outside the registered work
+directory are untouched except for the runner user's fixed Periphery cache.
+
+The hooks use the setup maintenance lock. Filesystem cleanup has a five-minute
+deadline; simulator shutdown and erase each have a two-minute deadline. Any
+failure returns a nonzero exit code and is reported in the job's hook log. Failed
+start cleanup prevents the job from proceeding. A later run retries cleanup;
+setup does not force permissions or elevate privileges to delete files.
+
+Normal runner maintenance installs the Python interpreter path and hook settings
+in `.env`, then restarts the idle service when needed. Update through that path
+before using the new hooks; do not copy hook files into an active installation.
+These hooks provide cleanup for trusted jobs, not isolation from malicious code
+running under the same account or a replacement for rebuilding a VM.
+
+For Xcode builds, put DerivedData inside the job workspace as shown below so it
+is covered by cleanup. The hooks do not erase the user's global DerivedData,
+dependency caches, installed tools, simulator runtimes or host download cache.
 
 ## Using the runner in workflows
 
@@ -354,43 +362,71 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
-      - run: xcodebuild build -scheme MyApp   # uses the wired DEVELOPER_DIR
+      - run: xcodebuild build -scheme MyApp -derivedDataPath "$GITHUB_WORKSPACE/.derived-data"
 ```
 
-Jobs needing a specific Xcode can override it:
-`env: { DEVELOPER_DIR: /Applications/Xcode-26.0.0-Beta.5.app/Contents/Developer }`.
+Jobs needing a specific Xcode can set `DEVELOPER_DIR` to the path of an installed
+Xcode. The default policy keeps
+only the latest release or RC; it does not preserve arbitrary older versions.
 
-## Security notes
+## Credentials and job access
 
-- **Never attach self-hosted runners to a public repository** — fork PRs
-  could execute arbitrary code on this machine.
-- The PAT lives exclusively in the login Keychain (`github-runner-pat`);
-  `config.toml` carries no secrets and is safe to commit. Be aware that
-  **CI jobs run as the same user** and can read that Keychain item while the
-  session is unlocked (always, on an auto-login CI box) — use a fine-grained
-  PAT limited to runner administration on exactly this repo/org so a
-  compromised job can't do more than re-register runners.
-- Runner tarballs are SHA-256-verified against the official release notes;
-  installation fails closed if no checksum is published.
-- Registration/removal tokens are short-lived (1 h), never stored, and
-  redacted from error messages/logs.
-- `xcodes` retains Apple authentication so unattended runs can install new
-  Xcode releases while the session remains valid. Same caveat as the PAT: jobs run as this user —
-  use a dedicated CI Apple ID with no other roles.
+Run only trusted workflows. Jobs execute as the runner user and can access that
+user's files, processes and unlocked Keychain. Restrict runner-group access to
+the intended repositories and prevent untrusted pull requests from using them.
+
+In the VM layout, the long-lived PAT, Apple credentials and generated guest
+passwords remain on the host. Each guest receives a short-lived registration
+token and keeps its runner registration credentials. Shared/NAT networking is
+not a boundary against the host or local network.
+
+On a physical runner, the PAT and Apple credentials belong to the same user as
+jobs. Limit the PAT to runner administration and use a dedicated Apple account.
+Store tokens with the hidden `./setup store-pat` prompt; never place them in
+shell arguments, configuration, logs or review drafts.
+
+Runner downloads are checked against published SHA-256 values. Guest transfers
+also verify checksums, and xcodes verifies Apple's application signature.
 
 ## Troubleshooting
 
-- **Boot-time run did something odd** → `./setup status`, then `./setup logs`;
-  inspect `~/Library/Logs/ci-runner-setup/bootstrap.log` if Python never started.
-- **Homebrew package failed or remains pinned** → inspect its phase output;
-  independent packages still get an attempt. Resolve the cause on both runners,
-  re-run maintenance, then compare fresh inventories.
-- **Runner offline after reboot** → is auto-login enabled (step 7)? LaunchAgents
-  only start once the user session exists.
-- **`xcodes` asks for Apple ID again** → sessions expire; run `./setup`
-  interactively once.
-- **Service state** → `cd ~/actions-runner && ./svc.sh status`; runner logs in
-  `~/actions-runner/_diag/`.
-- **Changed `runner.dir` in config.toml** → run `./setup uninstall` with
-  the old config first, then converge; otherwise the old registration is
-  orphaned.
+| Symptom | Next step |
+| --- | --- |
+| Background access check fails | Resolve the named Keychain, Apple or Automation permission in the logged-in session, then rerun the check. |
+| Runner offline after reboot | Unlock FileVault and log in on the host or physical runner. VM runners also need their guest login session; provisioned guests use automatic login. |
+| Apple asks for authentication | Run `./setup host xcode-login` on the machine downloading Xcode, then retry maintenance. |
+| Maintenance fails | Run `./setup status` and `./setup logs` on the runner. If Python never started, inspect `~/Library/Logs/ci-runner-setup/bootstrap.log`. |
+| Host refresh fails | Inspect `~/Library/Application Support/runner-host/xcode-refresh.log` and guest phase results. |
+| Guest source differs from the host | Inspect both clean revisions before a reviewed fast-forward. Provisioning never resets an existing checkout. |
+| Runner directory must change | Drain jobs and review migration first. Deregister using the old configuration before creating a replacement registration. |
+
+Service status is available through `~/actions-runner/svc.sh status`; runner
+logs are under `~/actions-runner/_diag/`. These paths follow `runner.dir` if changed.
+
+## Maintenance and repository checks
+
+The [maintenance guide](docs/maintenance.md) covers compatibility fixes and local
+validation. [AGENTS.md](AGENTS.md) defines constraints for automated work.
+The organization’s [repository standards](https://github.com/SchmiedmayerLab/.github/blob/main/REPOSITORY_STANDARDS.md)
+apply to documentation, licensing, citation metadata and workflows. CI calls the
+shared standards workflow and reports Python coverage to Codecov. Its first
+coverage report will appear after the workflow runs on GitHub.
+
+## Contributing
+
+Contributions to this project are welcome. Please make sure to read the [contribution guidelines](https://github.com/SchmiedmayerLab/.github/blob/main/CONTRIBUTING.md) and the [contributor covenant code of conduct](https://github.com/SchmiedmayerLab/.github/blob/main/CODE_OF_CONDUCT.md) first. You can find a list of contributors in the [CONTRIBUTORS.md](CONTRIBUTORS.md) file.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE.md](LICENSE.md) for more information.
+
+## Citation
+
+If you use this software, please cite it using the metadata in [CITATION.cff](CITATION.cff), which GitHub surfaces through the [*Cite this repository*](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-citation-files) button.
+
+## Our Research
+
+For more information, visit the [Schmiedmayer Lab GitHub organization](https://github.com/SchmiedmayerLab).
+
+![Schmiedmayer Lab](https://raw.githubusercontent.com/SchmiedmayerLab/.github/main/assets/footer-light.png#gh-light-mode-only)
+![Schmiedmayer Lab](https://raw.githubusercontent.com/SchmiedmayerLab/.github/main/assets/footer-dark.png#gh-dark-mode-only)

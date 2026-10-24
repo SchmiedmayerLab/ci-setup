@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -45,6 +45,20 @@ LISTING_AFTER_STABLE = LISTING_BETA_AHEAD + "26.0 (17A324)\n"
 
 
 class ParseListTests(unittest.TestCase):
+    def test_missing_intermediate_is_verified_and_imported_without_trust_override(self):
+        def download(url, target, **kwargs):
+            target.write_bytes(b'test-certificate')
+
+        with mock.patch.object(xcode.util, 'download', side_effect=download), \
+                mock.patch.object(xcode.util, 'INTERACTIVE', True), \
+                mock.patch.object(xcode, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run, \
+                mock.patch.object(xcode.util, 'sudo_run') as sudo:
+            xcode.ensure_wwdr_certificate()
+            self.assertEqual(run.call_args.args[0][:2], ['security', 'verify-cert'])
+            args = sudo.call_args.args[0]
+            self.assertEqual(args[:4], ['security', 'add-certificates', '-k', '/Library/Keychains/System.keychain'])
+            self.assertNotIn('trustRoot', args)
+
     def test_parses_stable_beta_and_annotations(self):
         releases = parse_list(LISTING_BETA_AHEAD)
         identifiers = [r.identifier for r in releases]
@@ -97,22 +111,22 @@ class SelectDesiredTests(unittest.TestCase):
 
     def test_beta_ahead_of_stable(self):
         desired, latest = self._ids(LISTING_BETA_AHEAD)
-        self.assertEqual(desired, ["16.4", "16.3", "26.0 Beta 5"])
+        self.assertEqual(desired, ["16.4", "26.0 Beta 5"])
         self.assertEqual(latest, "16.4")
 
     def test_beta_not_newer_than_stable_is_dropped(self):
         desired, latest = self._ids(LISTING_AFTER_STABLE)
-        self.assertEqual(desired, ["26.0", "16.4"])
+        self.assertEqual(desired, ["26.0"])
         self.assertEqual(latest, "26.0")
 
     def test_install_beta_false(self):
         desired, _ = self._ids(LISTING_BETA_AHEAD, install_beta=False)
-        self.assertEqual(desired, ["16.4", "16.3"])
+        self.assertEqual(desired, ["16.4"])
 
     def test_patch_releases_group_into_minor_trains(self):
         listing = "16.3 (16E140)\n16.4 (16F6)\n16.4.1 (16F8)\n"
         desired, latest = self._ids(listing, install_beta=False)
-        self.assertEqual(desired, ["16.4.1", "16.3"])
+        self.assertEqual(desired, ["16.4.1"])
         self.assertEqual(latest, "16.4.1")
 
     def test_rc_preferred_over_beta_of_same_version(self):
@@ -128,8 +142,20 @@ class SelectDesiredTests(unittest.TestCase):
     def test_newer_rc_train(self):
         listing = "26.0 (17A324)\n16.4 (16F6)\n26.1 Release Candidate (17B35)\n"
         desired, latest = self._ids(listing)
-        self.assertEqual(desired, ["26.0", "16.4", "26.1 Release Candidate"])
-        self.assertEqual(latest, "26.0")
+        self.assertEqual(desired, ["26.1 Release Candidate"])
+        self.assertEqual(latest, "26.1 Release Candidate")
+
+    def test_rc_is_default_even_with_betas_disabled(self):
+        listing = '27.0 (a)\n27.1 (b)\n27.2 Release Candidate (c)\n27.3 Beta (d)\n'
+        desired, latest = self._ids(listing, install_beta=False)
+        self.assertEqual(latest, '27.2 Release Candidate')
+        self.assertEqual(desired, ['27.2 Release Candidate'])
+
+    def test_final_release_wins_over_same_version_rc(self):
+        listing = '27.1 (a)\n27.2.0 Release Candidate 2 (b)\n27.2 (c)\n'
+        desired, latest = self._ids(listing, install_beta=False)
+        self.assertEqual(latest, '27.2')
+        self.assertNotIn('27.2.0 Release Candidate 2', desired)
 
     def test_single_stable_release_has_no_previous(self):
         desired, latest = self._ids("16.4 (16F6)\n", install_beta=False)
@@ -244,7 +270,9 @@ class XcodeMaintenanceTests(unittest.TestCase):
             xcode.ensure(self.cfg)
         self.assertIsNone(ctx.exception.developer_dir)
         self.assert_preserved()
-        self.assertEqual(self.post_install.call_args.args[1].identifier, "16.3")
+        self.post_install.assert_not_called()
+        install = next(call.args[0] for call in self.run.call_args_list if call.args[0][:2] == ['xcodes', 'install'])
+        self.assertIn('--no-superuser', install)
 
     def test_independent_installs_continue_and_errors_are_aggregated(self):
         self.cfg.xcode_install_beta = True
@@ -269,14 +297,14 @@ class XcodeMaintenanceTests(unittest.TestCase):
         self.post_install.side_effect = [SetupError("first-launch incomplete"), None]
         with self.assertRaisesRegex(xcode.XcodeSetupError, "first-launch incomplete"):
             xcode.ensure(self.cfg)
-        self.assertEqual(self.post_install.call_count, 2)
+        self.assertEqual(self.post_install.call_count, 1)
         self.assert_preserved()
 
     def test_cached_releases_do_not_justify_cleanup_or_success(self):
         self.run.return_value = subprocess.CompletedProcess([], 1, "", "offline")
         with self.assertRaisesRegex(xcode.XcodeSetupError, "cached releases"):
             xcode.ensure(self.cfg)
-        self.assertEqual(self.post_install.call_count, 2)
+        self.assertEqual(self.post_install.call_count, 1)
         self.assert_preserved()
 
     def test_wrong_installed_build_is_not_considered_ready(self):
@@ -376,6 +404,35 @@ class XcodeReadinessTests(unittest.TestCase):
         with mock.patch("cisetup.xcode._unattended_first_launch", return_value=False):
             with self.assertRaisesRegex(SetupError, "first-launch setup failed"):
                 xcode._post_install(self.cfg, self.release, self.app)
+
+    def test_host_bootstrap_accepts_license_before_first_launch_without_prompt(self):
+        self.run.side_effect = [
+            subprocess.CompletedProcess([], 1, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 1, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+        ]
+        with mock.patch.dict(xcode.os.environ, {'SUDO_ASKPASS': '/private/askpass',
+                                               'RUNNER_BOOTSTRAP_PASSWORD': 'private-test-password'}):
+            xcode._post_install(self.cfg, self.release, self.app)
+        commands = [call.args[0] for call in self.run.call_args_list]
+        executable = self.app / 'Contents/Developer/usr/bin/xcodebuild'
+        self.assertEqual(commands[1], ['sudo', '-A', executable, '-license', 'accept'])
+        self.assertEqual(commands[3], ['sudo', '-A', executable, '-runFirstLaunch'])
+        self.assertNotIn('private-test-password', str(commands))
+        self.assertTrue(any('-downloadAllPlatforms' in command for command in commands))
+        self.assertTrue(any('MetalToolchain' in command for command in commands))
+
+    def test_license_failure_prevents_first_launch_and_platform_downloads(self):
+        self.run.side_effect = [subprocess.CompletedProcess([], 1, '', ''), SetupError('license acceptance failed')]
+        with mock.patch.dict(xcode.os.environ, {'SUDO_ASKPASS': '/private/askpass',
+                                               'RUNNER_BOOTSTRAP_PASSWORD': 'private-test-password'}):
+            with self.assertRaisesRegex(SetupError, 'license acceptance failed'):
+                xcode._post_install(self.cfg, self.release, self.app)
+        self.assertEqual(self.run.call_count, 2)
 
     def test_temporary_selection_is_restored_even_when_command_raises(self):
         self.run.side_effect = [

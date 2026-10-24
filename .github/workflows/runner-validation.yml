@@ -1,0 +1,98 @@
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+# SPDX-License-Identifier: MIT
+
+name: Runner validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      first_runner:
+        description: First runner display name
+        required: true
+        default: GitHub Runner 3
+      second_runner:
+        description: Second runner display name
+        required: true
+        default: GitHub Runner 4
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ["${{ inputs.first_runner }}", "${{ inputs.second_runner }}"]
+    # Provisioning adds the display name as a custom runner label.
+    runs-on: [self-hosted, macOS, ARM64, "${{ matrix.runner }}"]
+    timeout-minutes: 30
+    steps:
+      - name: Check runner identity and toolchain
+        env:
+          EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
+          test "$(uname -m)" = arm64
+          sw_vers
+          xcodebuild -version
+          xcodebuild -checkFirstLaunchStatus
+          xcodebuild -showsdks
+          swift --version
+          python3 --version
+          git --version
+      - name: Build and test a Swift package
+        run: |
+          project="$(mktemp -d "$RUNNER_TEMP/runner-validation.XXXXXX")"
+          cd "$project"
+          swift package init --type library --name RunnerValidation
+          swift test
+      - name: Compile a Metal shader
+        run: |
+          project="$(mktemp -d "$RUNNER_TEMP/metal-validation.XXXXXX")"
+          cat > "$project/smoke.metal" <<'METAL'
+          #include <metal_stdlib>
+          using namespace metal;
+          kernel void smoke(device float *values [[buffer(0)]], uint index [[thread_position_in_grid]]) {
+            values[index] += 1.0f;
+          }
+          METAL
+          xcrun -sdk macosx metal -c "$project/smoke.metal" -o "$project/smoke.air"
+          test -s "$project/smoke.air"
+      - name: Boot each simulator platform
+        shell: python3 {0}
+        run: |
+          import json
+          import re
+          import subprocess
+
+          def simctl(*args, timeout=300):
+              return subprocess.check_output(["xcrun", "simctl", *args], text=True, timeout=timeout).strip()
+
+          inventory = json.loads(simctl("list", "-j"))
+          for platform, family in (("iOS", "iPhone"), ("tvOS", "Apple TV"),
+                                   ("watchOS", "Apple Watch"), ("visionOS", "Apple Vision")):
+              candidates = [r for r in inventory["runtimes"]
+                            if r.get("isAvailable") and r["name"].startswith(platform + " ")]
+              if not candidates:
+                  raise RuntimeError("Missing available " + platform + " runtime")
+              runtime = max(candidates, key=lambda r: (
+                  tuple(int(p) for p in r["version"].split(".")),
+                  not bool(re.search(r"[a-z]$", r["buildversion"])), r["buildversion"]))
+              supported = {d["identifier"] for d in runtime.get("supportedDeviceTypes", [])}
+              devices = [d for d in inventory["devicetypes"] if family in d["name"]
+                         and (not supported or d["identifier"] in supported)]
+              if not devices:
+                  raise RuntimeError("Missing compatible " + platform + " device type")
+              device = simctl("create", "Runner Validation " + platform,
+                              devices[-1]["identifier"], runtime["identifier"])
+              try:
+                  simctl("boot", device)
+                  simctl("bootstatus", device, "-b")
+                  print(platform + " " + runtime["version"] + " (" + runtime["buildversion"] + "): booted")
+              finally:
+                  subprocess.run(["xcrun", "simctl", "shutdown", device], capture_output=True, timeout=60)
+                  simctl("delete", device, timeout=60)

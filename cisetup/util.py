@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -304,7 +304,7 @@ def sudo_run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
     (boot-time) path must work entirely without sudo."""
     require_interactive(f"`sudo {shlex.join(str(c) for c in cmd)}`")
     kwargs.setdefault("timeout", DEFAULT_SUDO_TIMEOUT)
-    return run(["sudo", *cmd], **kwargs)
+    return run(["sudo", *(["-A"] if os.environ.get("SUDO_ASKPASS") else []), *cmd], **kwargs)
 
 
 def download(url: str, dest: Path, *, timeout: float | _DefaultTimeout = _DEFAULT_TIMEOUT) -> None:

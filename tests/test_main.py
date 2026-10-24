@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -116,6 +116,71 @@ class MainTests(unittest.TestCase):
         patcher = mock.patch(target, **kwargs)
         self.addCleanup(patcher.stop)
         return patcher.start()
+
+    def test_bootstrap_credential_is_cleared_before_runner_configuration(self):
+        os.environ['RUNNER_BOOTSTRAP_PASSWORD'] = 'private-test-password'
+        os.environ['SUDO_ASKPASS'] = '/private/askpass'
+        def xcode_ready(cfg):
+            self.assertEqual(os.environ['RUNNER_BOOTSTRAP_PASSWORD'], 'private-test-password')
+            return Path('/fake/Ready/Developer')
+        def runner_ready(cfg):
+            self.assertNotIn('RUNNER_BOOTSTRAP_PASSWORD', os.environ)
+            self.assertNotIn('SUDO_ASKPASS', os.environ)
+        self.xcode.side_effect = xcode_ready
+        self.install.side_effect = runner_ready
+        self.start.side_effect = runner_ready
+        self.assertEqual(main.main(['converge']), 0)
+
+    def test_failed_xcode_phase_still_clears_bootstrap_credential(self):
+        os.environ['RUNNER_BOOTSTRAP_PASSWORD'] = 'private-test-password'
+        os.environ['SUDO_ASKPASS'] = '/private/askpass'
+        self.xcode.side_effect = SetupError('Xcode failed')
+        self.assertEqual(main.main(['converge']), 1)
+        self.assertNotIn('RUNNER_BOOTSTRAP_PASSWORD', os.environ)
+        self.assertNotIn('SUDO_ASKPASS', os.environ)
+
+    def test_guest_registration_uses_stdin_without_reading_or_storing_pat(self):
+        self.patch('cisetup.main.sys.stdin', new=io.StringIO('short-lived-test-token\n'))
+        self.patch('cisetup.runner.is_registered', return_value=False)
+        register = self.patch('cisetup.runner._register')
+        code = main.main(['register', '--runner-name', 'GitHub Runner 3', '--registration-token-stdin'])
+        self.assertEqual(code, 0)
+        register.assert_called_once_with(self.cfg, token='short-lived-test-token')
+        self.resolve_pat.assert_not_called()
+        self.assertEqual((self.state / 'runner-name').read_text(), 'GitHub Runner 3\n')
+        self.assertNotIn('short-lived-test-token', self.stdout.getvalue())
+        self.start.assert_not_called()
+        self.brew.assert_not_called()
+        self.xcode.assert_not_called()
+
+    def test_guest_registration_preserves_existing_different_identity(self):
+        self.patch('cisetup.main.sys.stdin', new=io.StringIO('short-lived-test-token\n'))
+        self.patch('cisetup.runner.registration_matches', return_value=False)
+        register = self.patch('cisetup.runner._register')
+        code = main.main(['register', '--runner-name', 'GitHub Runner 3', '--registration-token-stdin'])
+        self.assertEqual(code, 1)
+        register.assert_not_called()
+        self.install.assert_not_called()
+        self.assertFalse((self.state / 'runner-name').exists())
+
+    def test_guest_registration_rerun_retains_matching_registration(self):
+        self.patch('cisetup.main.sys.stdin', new=io.StringIO(''))
+        self.patch('cisetup.runner.registration_matches', return_value=True)
+        register = self.patch('cisetup.runner._register')
+        code = main.main(['register', '--runner-name', 'GitHub Runner 3', '--registration-token-stdin'])
+        self.assertEqual(code, 0)
+        register.assert_not_called()
+        self.install.assert_not_called()
+        self.assertEqual((self.state / 'runner-name').read_text(), 'GitHub Runner 3\n')
+
+    def test_invalid_registration_token_stops_before_installation(self):
+        self.patch('cisetup.main.sys.stdin', new=io.StringIO('invalid token\n'))
+        self.patch('cisetup.runner.is_registered', return_value=False)
+        register = self.patch('cisetup.runner._register')
+        code = main.main(['register', '--runner-name', 'GitHub Runner 3', '--registration-token-stdin'])
+        self.assertEqual(code, 1)
+        register.assert_not_called()
+        self.install.assert_not_called()
 
     @contextmanager
     def paused(self, cfg):

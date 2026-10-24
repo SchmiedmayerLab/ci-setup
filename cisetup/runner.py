@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -16,6 +16,7 @@ import json
 import platform
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -318,7 +319,6 @@ def _register(cfg: Config, token: str | None = None) -> None:
         "--token", token,
         "--name", cfg.runner_name,
         "--work", cfg.work_dir,
-        "--replace",
     ]
     if cfg.labels:
         args += ["--labels", ",".join(cfg.labels)]
@@ -387,17 +387,11 @@ def ensure_registered(cfg: Config) -> None:
 
 
 def _cleanup_old_work_dir(cfg: Config, old_state: dict | None) -> None:
-    """After a re-registration changed the work dir name, the previous one
-    holds only dead job workspaces — reclaim the space."""
+    """Old state alone cannot authorize deleting an entire former directory."""
     old_name = (old_state or {}).get("work_dir")
     if not old_name or old_name == cfg.work_dir:
         return
-    old_dir = Path(old_name)
-    if not old_dir.is_absolute():
-        old_dir = cfg.runner_dir / old_dir
-    if old_dir.exists():
-        shutil.rmtree(old_dir, ignore_errors=True)
-        ok(f"removed the previous work dir ({old_dir})")
+    warn('previous work directory retained; inspect it before manual removal')
 
 
 # --- job environment ---------------------------------------------------------
@@ -434,16 +428,17 @@ def ensure_job_env(cfg: Config, brew_env: BrewEnv, developer_dir: Path | None) -
         "ACTIONS_RUNNER_HOOK_JOB_STARTED",
         "ACTIONS_RUNNER_HOOK_JOB_COMPLETED",
         "CI_SETUP_WORK_DIR",
+        "CI_SETUP_PYTHON",
     )
     if cfg.cleanup_hooks:
-        work_dir = Path(cfg.work_dir)
-        if not work_dir.is_absolute():
-            work_dir = cfg.runner_dir / work_dir
+        from .cleanup import work_path
+        _, work_dir = work_path(cfg)
         env_updates.update(
             {
                 "ACTIONS_RUNNER_HOOK_JOB_STARTED": str(cfg.repo_root / "hooks/job-started.sh"),
                 "ACTIONS_RUNNER_HOOK_JOB_COMPLETED": str(cfg.repo_root / "hooks/job-completed.sh"),
                 "CI_SETUP_WORK_DIR": str(work_dir),
+                "CI_SETUP_PYTHON": sys.executable,
             }
         )
 
