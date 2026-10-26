@@ -79,6 +79,16 @@ reuse lint
 git diff --check
 ```
 
+Some terminal-input tests create a real pseudo-terminal even though machine operations are mocked.
+If these fail only inside an automation sandbox, retain that result and rerun the affected module in a normal permitted local terminal:
+
+```sh
+python3 -m unittest discover -s tests -p test_util.py
+```
+
+Report both environments and results; a passing rerun does not erase the initial failure or prove that every sandbox failure has the same cause.
+Do not weaken system security controls or skip unrelated failing tests to obtain a passing result.
+
 For changes to machine behavior, use a disposable owned guest and verify the affected path: first install, safe rerun, interrupted operation, busy-job deferral, or restart.
 Toolchain changes should check selected Xcode, required SDKs, simulator boot, Swift tests and Metal compilation/compute.
 Restore-image changes need a real Apple discovery and compatibility check on an Apple silicon host; Linux tests mock that API.
@@ -114,6 +124,9 @@ Separate foreground credential access, background credential access and backgrou
 An external outage is not proof of invalid credentials, and a “No route to host” diagnostic alone does not prove a privacy-permission cause.
 
 A complete host validation needs real concurrent GitHub jobs, cleanup through real jobs, active-job maintenance deferral and coordinated restart recovery in addition to local smoke checks.
+Record local listener health, successful background maintenance and GitHub online status separately, including any reconnection delay after maintenance.
+If the owner defers guest restarts, prohibits a host reboot or has not approved publishing/dispatching the validation workflow, leave those checks explicitly not tested.
+Online runners and successful locked-session refresh do not substitute for these missing acceptance checks.
 Keep physical-host runner validation explicitly separate when it is outside the test scope.
 Follow [the completion checklist](setup.md#completion-checklist) and retain a sanitized reproduction before changing code or machine settings.
 The [prepare/automate flow](prepare.md) preserves these distinctions; test its real launchd handoff and failure recovery as well as mocked provisioning phases.

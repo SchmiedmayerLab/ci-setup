@@ -66,6 +66,7 @@ def binding(path):
     git = ['git', '-C', str(root)]
     if host.command([*git, 'status', '--porcelain', '--untracked-files=normal']):
         raise host.HostError('Commit the reviewed setup changes before preparation; guests require clean committed source')
+    host.source_branch()
     return {'uid': os.getuid(), 'root': str(root), 'revision': host.command([*git, 'rev-parse', 'HEAD']),
             'python': str(Path(sys.executable).resolve()), 'config_path': str(path),
             'settings_sha256': host.digest(root / 'config.toml')}

@@ -380,6 +380,7 @@ def main(argv):
         if args.layout == 'host' and not args.check:
             if host.command(['git', '-C', host.ROOT, 'status', '--porcelain', '--untracked-files=normal']):
                 raise host.HostError('Commit reviewed setup changes before installing guests; only committed source is transferred')
+            host.source_branch()
         print(f'Layout: {args.layout}. GitHub destination: {cfg.github_url}', flush=True)
         if not args.check:
             prerequisites(args.layout, cfg)

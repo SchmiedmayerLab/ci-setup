@@ -13,7 +13,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call as mock_call, patch
 import uuid
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -513,6 +513,47 @@ class HostBoundaryTests(unittest.TestCase):
             self.assertEqual(host.main(['status', '--config', str(Path(directory) / 'host.toml')]), 0)
             self.assertFalse(host.STATE.exists())
             self.assertIn('unverified', json.loads(output.getvalue())['runner_setup'])
+
+
+class HostTrustTests(unittest.TestCase):
+    def test_signature_is_checked_before_verbose_gatekeeper_assessment(self):
+        with patch.object(host, 'command', return_value='') as command:
+            host.verify_utm_trust()
+        self.assertEqual(command.call_args_list, [
+            mock_call(['/usr/bin/codesign', '--verify', '--deep', '--strict', host.UTM], timeout=120),
+            mock_call(['/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose=4', host.UTM], timeout=120),
+        ])
+
+    def test_invalid_signature_stops_without_gatekeeper_or_ticket_recovery(self):
+        with patch.object(host, 'command', side_effect=host.HostError('invalid signature')) as command:
+            with self.assertRaisesRegex(host.HostError, 'invalid signature'):
+                host.verify_utm_trust()
+        self.assertEqual(command.call_count, 1)
+
+    def test_gatekeeper_rejection_retains_reason_and_stops_without_trust_changes(self):
+        for detail in ('source=Unnotarized Developer ID', 'source=revoked', 'spctl timed out'):
+            with self.subTest(detail=detail), patch.object(
+                    host, 'command', side_effect=['', host.HostError(detail)]) as command:
+                with self.assertRaises(host.HostError) as raised:
+                    host.verify_utm_trust()
+                self.assertIn(detail, str(raised.exception))
+                self.assertIn('docs/setup.md#utm-trust-checks', str(raised.exception))
+                self.assertEqual(command.call_count, 2)
+
+
+class SourceBranchTests(unittest.TestCase):
+    def test_named_branch_is_returned_without_changing_checkout(self):
+        with patch.object(host, 'command', return_value='review-branch') as command:
+            self.assertEqual(host.source_branch(), 'review-branch')
+        command.assert_called_once_with(
+            ['git', '-C', str(host.ROOT), 'symbolic-ref', '--quiet', '--short', 'HEAD'])
+
+    def test_detached_head_has_actionable_error_without_changing_checkout(self):
+        with patch.object(host, 'command', side_effect=host.HostError('git: command failed')) as command:
+            with self.assertRaisesRegex(host.HostError, 'named local Git branch') as raised:
+                host.source_branch()
+        self.assertIn('without changing its revision', str(raised.exception))
+        self.assertEqual(command.call_count, 1)
 
 
 if __name__ == '__main__':

@@ -200,7 +200,7 @@ def configure(spec, state_path, vm_name=None):
     git = ['git', '-C', str(host.ROOT)]
     if host.command([*git, 'status', '--porcelain', '--untracked-files=normal']):
         raise host.HostError('Commit the reviewed setup changes before configuring guests; only committed source is transferred')
-    branch = host.command([*git, 'symbolic-ref', '--quiet', '--short', 'HEAD'])
+    branch = host.source_branch()
     revision = host.command([*git, 'rev-parse', 'HEAD'])
     state = host.read_state(state_path, spec)
     targets = connections(spec, state)

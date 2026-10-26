@@ -73,6 +73,19 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(events, ['prerequisites', 'host.runner_credentials', 'apple_access',
                                   'background_check', 'install_host'])
 
+    def test_detached_host_source_stops_before_prerequisites_or_credentials(self):
+        events = self.flow()
+
+        def git(args, **kwargs):
+            if 'symbolic-ref' in args:
+                raise host.HostError('git: command failed')
+            return ''
+
+        self.mock('host.command', side_effect=git)
+        self.assertEqual(install.main(['host']), 1)
+        self.assertEqual(events, [])
+        self.assertIn('named local Git branch', self.out.getvalue())
+
     def test_guided_host_uses_adaptive_memory_and_oversubscribed_cpu_defaults(self):
         self.flow()
         plan = self.mock('host_plan', return_value=(self.root / 'host.toml', self.spec))

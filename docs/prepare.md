@@ -65,6 +65,16 @@ For preparation without starting the worker, use `--no-start`; an existing login
 ./setup host resume --config ~/runner-host.toml
 ```
 
+### When validation requires a cancellation test
+
+Run `./setup prepare host --dedicated-host --no-start` and complete prerequisite prompts, then answer **n** to the first **Apply these power settings to this dedicated VM host?** question.
+Retain the preview and restore command before answering.
+Verify the cancellation message, unchanged values with `pmset -g custom`, and absence of new VMs or a provisioning worker before rerunning the same preparation command.
+On the second attempt, review and accept the power plan, then finish credentials, permissions and VM-plan approval in that same operator session.
+Installed prerequisites remain available after cancellation.
+If the power settings already match, that confirmation is not presented; record the real cancellation case as not tested and use the mocked tests instead of changing settings merely to recreate it.
+If the first plan was accepted, preserve the approved state and report cancellation as not tested rather than repeating preparation blindly.
+
 ## Follow progress and recover
 
 ```sh
@@ -100,6 +110,12 @@ The installer verifies first-boot guest SSH from its actual background context b
 This final connection check is necessary even after the upfront permission probe: the guest does not exist during initial preparation, and permissions or networking can change later.
 Resolve a missing **Runner Host** grant in System Settings → Privacy & Security while unlocked, then resume.
 Do not disable security controls or recreate a VM to work around an access error.
+Foreground diagnostics from Terminal, an editor or another automation app can have different Local Network attribution from Runner Host.
+A successful background guest check does not grant those other processes access, and a foreground failure does not establish that the background installer failed.
+If supplementary diagnostics need another app, exercise that app's actual guest connection while the operator is still available after first boot.
+Observe the failure and normal consent prompt before attributing it to a permission; “No route to host” alone is not a diagnosis.
+Native UI inspection may require manual unlock, even while background maintenance continues successfully with the screen locked.
+Keep local progress and agent-result checks available independently of UI automation, and record any monitoring gap rather than claiming continuous observation.
 
 For an automation environment that deliberately owns the foreground process, the same approved worker is also available as:
 

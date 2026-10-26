@@ -68,6 +68,16 @@ def applescript(action, *args):
     return command(['/usr/bin/osascript', SCRIPT, action, *args], timeout=120)
 
 
+def source_branch():
+    """Guest bundles require a named branch, even when HEAD is a signed commit."""
+    try:
+        return command(['git', '-C', str(ROOT), 'symbolic-ref', '--quiet', '--short', 'HEAD'])
+    except HostError as error:
+        raise HostError(f'{error}\nCannot verify a named local Git branch for guest source transfer. '
+                        'If HEAD is detached, attach the approved commit to a branch without changing its revision, '
+                        'then retry; see docs/setup.md for the PR checkout procedure.') from error
+
+
 def hostname(name):
     if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9 -]{0,62}', name) or name != name.strip():
         raise HostError('VM names must start with a letter and contain only letters, digits, spaces, or hyphens')
@@ -621,6 +631,17 @@ def login_agent(config, spec, path):
     print('Load the agent once while unlocked to approve its own Automation permission; see docs/hosts.md.')
 
 
+def verify_utm_trust():
+    """Keep signature and Gatekeeper failures distinct; never override trust."""
+    command(['/usr/bin/codesign', '--verify', '--deep', '--strict', UTM], timeout=120)
+    try:
+        command(['/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose=4', UTM], timeout=120)
+    except HostError as error:
+        raise HostError(f'{error}\nUTM did not pass Gatekeeper assessment. '
+                        'Retain the diagnostic and follow docs/setup.md#utm-trust-checks; '
+                        'a valid code signature alone is not Gatekeeper acceptance.') from error
+
+
 def bootstrap():
     brew = next((p for p in ('/opt/homebrew/bin/brew', '/usr/local/bin/brew') if Path(p).is_file()), None)
     if not brew:
@@ -629,8 +650,7 @@ def bootstrap():
         # Disable automatic upgrades/cleanup of unrelated software.
         command(['/usr/bin/env', 'HOMEBREW_NO_AUTO_UPDATE=1', 'HOMEBREW_NO_INSTALL_CLEANUP=1',
                  brew, 'install', '--yes', '--cask', 'utm'], timeout=3600)
-    command(['/usr/bin/codesign', '--verify', '--deep', '--strict', UTM], timeout=120)
-    command(['/usr/sbin/spctl', '--assess', '--type', 'execute', UTM], timeout=120)
+    verify_utm_trust()
     check_utm()
     print('Host prerequisites ready. Open UTM once, then run host plan with your host configuration.')
     print('Host security, power settings, remote access, and runner services were not changed.')

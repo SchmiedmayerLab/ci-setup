@@ -38,6 +38,26 @@ cd ~/runner-setup
 ```
 
 For pull-request validation, check out the requested PR head and record and verify its exact revision before running setup.
+Use a named local branch: guest transfer creates a named-branch Git bundle, so a detached checkout is not supported.
+After cloning, substitute the approved PR number and full commit ID in this example:
+
+```sh
+pr_number=123
+approved_revision='<approved full commit ID>'
+git fetch origin "refs/pull/${pr_number}/head" &&
+test "$(git rev-parse FETCH_HEAD)" = "$approved_revision" &&
+git verify-commit "$approved_revision" &&
+git switch -c "validate-pr-${pr_number}" "$approved_revision" &&
+test -z "$(git status --porcelain --untracked-files=normal)" &&
+git symbolic-ref --quiet --short HEAD &&
+git rev-parse HEAD
+```
+
+Configure trusted signing keys according to the owner's policy before verification; a missing verifier or trust configuration is not permission to skip this check.
+If any command fails, stop and inspect the cause before running setup.
+If the fetched PR head differs from the approved commit, report the new revision and confirm the deployment target rather than silently updating it.
+The branch-creation command refuses an existing branch; inspect and reuse a suitable clean checkout without resetting it.
+For an existing detached checkout at the approved commit, `git switch -c <new-local-branch> HEAD` attaches that same commit to a name; verify the revision and clean state afterward.
 Do not provision from a source archive or an uncommitted checkout; guest transfer requires committed Git history.
 If an automation shell cannot display Apple's installer, use the local Terminal and System Settings rather than treating a zero exit status as successful installation.
 
@@ -76,6 +96,36 @@ Setup obtains and checks:
 Stay logged in and unlocked for initial permissions and credential entry.
 Keep the host awake and connected to power.
 Setup checks resources before creating VMs; restore images, cached Xcode archives, simulator runtimes and jobs also consume host or guest disk space.
+
+## UTM trust checks
+
+Host bootstrap verifies UTM's code signature and then asks Gatekeeper to assess the application.
+A valid code signature does not establish notarization or Gatekeeper acceptance.
+If assessment fails, retain its detailed reason and inspect the installed application without changing trust settings:
+
+```sh
+codesign --verify --deep --strict /Applications/UTM.app
+spctl --assess --type execute --verbose=4 /Applications/UTM.app
+xcrun stapler validate /Applications/UTM.app
+```
+
+Stop if signature verification fails, and review the application source through the normal installation process.
+If the signature is valid, the application came from the reviewed official distribution, and the assessment reports `Unnotarized Developer ID`, a missing app ticket is one possible cause.
+A ticket stapled to the downloaded disk image does not guarantee that the installed app has its own ticket.
+Apple's tool can retrieve and attach an existing notarization ticket to the app:
+
+```sh
+xcrun stapler staple /Applications/UTM.app &&
+codesign --verify --deep --strict /Applications/UTM.app &&
+xcrun stapler validate /Applications/UTM.app &&
+spctl --assess --type execute --verbose=4 /Applications/UTM.app
+```
+
+This retrieves Apple's existing ticket; it does not notarize an unapproved application.
+If retrieval is unavailable, write permission is denied, or reassessment still rejects the app, stop and preserve the diagnostics for review.
+Do not remove quarantine, add trust exceptions, re-sign UTM or disable Gatekeeper to pass setup.
+Resume the same preparation command only after signature verification and Gatekeeper assessment succeed.
+See Apple's [notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
 
 ## Plan the interactive session
 
@@ -222,6 +272,9 @@ Treat these as separate checkpoints rather than one success message:
    `host status` reports VM ownership and installation state; `phase = ready` alone is not runner readiness.
 3. **Background operation verified:** both installed host agents have completed successfully, including an actual Xcode refresh that reaches the guests from its LaunchAgent context.
    A loaded or still-running agent has not yet proved successful completion.
+   Check GitHub's online status separately: maintenance completion and a running local listener do not prove remote connectivity.
+   After maintenance, allow a bounded reconnection interval (for example, up to five minutes, checking every 30 seconds) and record when each original registration returns online.
+   If one remains offline, inspect its listener and sanitized connection diagnostics; do not repeatedly rerun provisioning or replace its registration.
 4. **Recovery verified:** coordinated guest restarts restore automatic login, SSH and the same runner identities; a coordinated host restart restores both guests after manual FileVault unlock and host login.
    Verify locked-session behavior separately from restart, logout and sleep.
 5. **CI verified:** with approval for the exact workflow actions, run the validation workflow on each new runner, run both concurrently, and exercise cleanup and busy-job deferral through real jobs.
@@ -235,6 +288,8 @@ Do not mark installation fully validated while a background agent fails or requi
 | Symptom | Check or recovery step |
 | --- | --- |
 | `xcode-select --install` says installation was requested, but Git still fails | Finish the specific Command Line Tools installer or Software Update entry, then verify the developer directory and Git. The request message is not completion. |
+| UTM's code signature passes but Gatekeeper rejects it | Retain the verbose assessment reason and follow [UTM trust checks](#utm-trust-checks). A missing ticket can have a supported recovery; signature success alone is insufficient. |
+| Guest source transfer requires a named branch | Follow the [PR checkout procedure](#get-the-checkout-on-a-fresh-mac), retaining the approved commit and clean state. Do not reset the checkout or change the tested revision. |
 | An administrator password prompt is invisible | Rerun the same documented command in the operator's normal local Terminal; never paste a password into chat, a log or command arguments. |
 | PAT is rejected | Correct an explicitly invalid token privately. For a permission/approval failure, fix the destination permission or organization approval; for an availability failure, retry later without replacing the token blindly. |
 | Apple sign-in succeeds but a background check fails | Separate foreground sign-in from background Keychain/session/network access. An HTTP 429/5xx response or timeout is an availability failure, not evidence of a wrong password. |

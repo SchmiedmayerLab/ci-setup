@@ -301,6 +301,44 @@ class PreparationTests(unittest.TestCase):
     original_command = staticmethod(host.command)
 
 
+class SourceBindingTests(unittest.TestCase):
+    def test_detached_checkout_stops_preparation_before_prerequisites_or_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / 'host.toml'
+
+            def git(args, **kwargs):
+                if 'status' in args:
+                    return ''
+                if 'symbolic-ref' in args:
+                    raise host.HostError('git: command failed')
+                raise AssertionError('unexpected command')
+
+            with patch.object(host, 'ROOT', root), patch.object(host, 'STATE', root / 'state'), \
+                    patch.object(host, 'command', side_effect=git), \
+                    patch.object(prep.sys.stdin, 'isatty', return_value=True), \
+                    patch.object(install, 'prerequisites') as prerequisites, \
+                    patch.object(host, 'runner_credentials') as credentials, \
+                    patch.object(host, 'materialize_config') as image, \
+                    patch.object(prep, 'launch') as launch:
+                with self.assertRaisesRegex(host.HostError, 'named local Git branch'):
+                    prep.prepare(SimpleNamespace(config=path))
+                prerequisites.assert_not_called()
+                credentials.assert_not_called()
+                image.assert_not_called()
+                launch.assert_not_called()
+                self.assertFalse(prep.paths(path)[0].exists())
+
+    def test_named_branch_keeps_exact_revision_in_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / 'config.toml').write_text('synthetic test configuration\n')
+            with patch.object(host, 'ROOT', root), patch.object(
+                    host, 'command', side_effect=['', 'review-branch', 'a' * 40]):
+                binding = prep.binding(root / 'host.toml')
+            self.assertEqual(binding['revision'], 'a' * 40)
+
+
 class AgentCompletionTests(unittest.TestCase):
     def test_failed_agent_exit_is_not_reported_as_installed(self):
         with patch.object(host, 'command', side_effect=['123', 'state = not running\nlast exit code = 1\n']):
