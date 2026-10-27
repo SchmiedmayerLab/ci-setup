@@ -1,0 +1,42 @@
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+# SPDX-License-Identifier: MIT
+
+# Copy outside the checkout, for example ~/runner-host.toml.
+# This is a manual alternative to the generated configuration. Preserve the image
+# pin when rebuilding; only reuse it on hosts that support that image.
+# Prefer `./setup install host` to download the image and size the VMs automatically.
+# This manual example needs account setup in each guest unless you opt in below.
+[host]
+# This manual example uses conservative fixed CPU counts.
+# Generated layouts default to a 1.5 CPU ratio and record cpu_overcommit = true.
+cpu_overcommit = false
+
+[image]
+path = "~/Downloads/UniversalMac_Restore.ipsw"
+sha256 = "REPLACE_WITH_SHA256"
+# Optional: download directly from Apple when path does not exist.
+# url = "https://updates.cdn-apple.com/.../UniversalMac_Restore.ipsw"
+
+[guest]
+username = "runner"
+# Used only with create --provision; macOS 27+ on host AND guest required.
+# Opt in explicitly if unattended guest login or SSH is wanted.
+automatic_login = false
+remote_login = false
+
+# Each guest needs space for Xcode, simulator runtimes, and build artifacts.
+# Leave host RAM headroom; generated layouts reserve 25% bounded to 8–16 GiB.
+# These manual CPU counts do not oversubscribe the host.
+[[vm]]
+name = "GitHub Runner 1"
+cpus = 4
+memory_gib = 12
+disk_gib = 256
+
+[[vm]]
+name = "GitHub Runner 2"
+cpus = 4
+memory_gib = 12
+disk_gib = 256

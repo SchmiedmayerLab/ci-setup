@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -27,6 +27,36 @@ class Restart(BaseException):
 
     def __init__(self, environment: dict[str, str]):
         self.environment = environment
+
+
+def cmd_register(args, cfg: config.Config, report: RunReport) -> int:
+    """Register a new guest with a short-lived token supplied by its host."""
+    if cfg.adopted_registration is not None:
+        raise SetupError("an adopted runner cannot be registered again")
+    name = config.validate_runner_name(args.runner_name)
+    saved = config.saved_runner_name()
+    if saved is not None and saved != name:
+        raise SetupError("a different runner name is already saved; existing registration was preserved")
+    cfg.runner_name = name
+    if name not in cfg.labels:
+        cfg.labels.append(name)
+    if runner.is_registered(cfg):
+        if not runner.registration_matches(cfg):
+            raise SetupError("existing registration differs; explicit migration is required")
+        config.save_runner_name(name)
+        ok("matching runner registration retained")
+        return 0
+    token = sys.stdin.readline(4098).removesuffix("\n")
+    if not token or len(token) > 4096 or not token.isascii() or not token.isprintable() or any(c.isspace() for c in token):
+        raise SetupError("a short-lived registration token is required on stdin")
+    runlog.register_secret(token)
+    if report.phase("runner software", lambda: runner.ensure_installed(cfg)).error:
+        return 1
+    if report.phase("runner registration", lambda: runner._register(cfg, token=token)).error:
+        return 1
+    config.save_runner_name(name)
+    ok("runner registered; run converge to finish tools and start the service")
+    return 0
 
 
 def cmd_converge(args, cfg: config.Config, report: RunReport) -> int:
@@ -70,11 +100,15 @@ def cmd_converge(args, cfg: config.Config, report: RunReport) -> int:
         report.phase("Xcode sudo configuration", xcode.ensure_sudoless_select)
         report.phase("Apple signing certificate", xcode.ensure_wwdr_certificate)
         developer_dir = None
-        if not args.skip_xcode:
-            result = report.phase("Xcode", lambda: xcode.ensure(cfg))
-            developer_dir = result.value or getattr(result.error, "developer_dir", None)
-        else:
-            report.note("Xcode", "skipped", "requested with --skip-xcode")
+        try:
+            if not args.skip_xcode:
+                result = report.phase("Xcode", lambda: xcode.ensure(cfg))
+                developer_dir = result.value or getattr(result.error, "developer_dir", None)
+            else:
+                report.note("Xcode", "skipped", "requested with --skip-xcode")
+        finally:
+            if os.environ.pop('RUNNER_BOOTSTRAP_PASSWORD', None) is not None:
+                os.environ.pop('SUDO_ASKPASS', None)
 
         report.phase("runner software", lambda: runner.ensure_installed(cfg))
         if (cfg.runner_dir / "config.sh").exists():
@@ -349,14 +383,31 @@ _RAW_ARGV: list[str] = []
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["_host-probe"]:
+        from .install import probe
+        if len(argv) not in (3, 4) or argv[1] not in ('host', 'runner', 'guest'):
+            return 2
+        probe(argv[1], Path(argv[2]), Path(argv[3]) if len(argv) == 4 else None)
+        return 0
+    if argv[:1] == ["prepare"]:
+        from .preparation import main as prepare_main
+        return prepare_main(argv[1:])
+    if argv[:1] == ["install"]:
+        from .install import main as install_main
+        return install_main(argv[1:])
+    if argv[:1] == ["host"]:
+        from .host import main as host_main
+        return host_main(argv[1:])
     global _RAW_ARGV
     _RAW_ARGV = list(argv)
     parser = argparse.ArgumentParser(
-        prog="setup", description="Maintain a dedicated self-hosted macOS CI runner.")
+        prog="setup", description="Maintain a dedicated self-hosted macOS CI runner. Use install --help for guided setup or host --help for UTM commands.")
     parser.add_argument("command", nargs="?", default="converge",
-                        choices=["converge", "update", "adopt", "status", "info", "logs", "compare", "store-pat", "uninstall"])
-    parser.add_argument("token", nargs="?", help="PAT for store-pat; snapshot path for compare; existing runner directory for adopt")
+                        choices=["converge", "update", "adopt", "register", "status", "info", "logs", "compare", "store-pat", "uninstall"])
+    parser.add_argument("token", nargs="?", help="snapshot path for compare or runner directory for adopt; use store-pat without arguments for hidden token input")
     parser.add_argument("--non-interactive", action="store_true", help="never prompt")
+    parser.add_argument("--registration-token-stdin", action="store_true", help="register: read a short-lived registration token from stdin")
+    parser.add_argument("--runner-name", help="register: persist this machine's runner display name outside the checkout")
     parser.add_argument("--skip-brew", action="store_true", help="skip Homebrew changes")
     parser.add_argument("--skip-xcode", action="store_true", help="skip the Xcode phase")
     parser.add_argument("--json", action="store_true", help="export a comparable inventory (status/info)")
@@ -366,6 +417,11 @@ def main(argv: list[str]) -> int:
         parser.error("unexpected extra argument")
     if args.command == "adopt" and not args.token:
         parser.error("adopt requires the existing runner directory (for example ~/runner)")
+    if args.command == "register":
+        if not args.registration_token_stdin or not args.runner_name or sys.stdin.isatty():
+            parser.error("register requires --runner-name and --registration-token-stdin with piped input")
+    elif args.registration_token_stdin or args.runner_name:
+        parser.error("registration token and runner name options are only supported with register")
     util.INTERACTIVE = not args.non_interactive and sys.stdin.isatty()
     util.WARNINGS.clear()
     repo_root = Path(__file__).resolve().parent.parent
@@ -400,6 +456,7 @@ def main(argv: list[str]) -> int:
                 cfg = adoption.prepare(cfg, Path(args.token).expanduser())
         except SetupError as error:
             config_error = error
+        runlog.register_secret(os.environ.get('RUNNER_BOOTSTRAP_PASSWORD'))
         with runlog.RunLog(
             args.command,
             retention_days=cfg.log_retention_days if cfg else 30,
@@ -410,7 +467,9 @@ def main(argv: list[str]) -> int:
             try:
                 if config_error:
                     raise config_error
-                if args.command == "uninstall":
+                if args.command == "register":
+                    code = cmd_register(args, cfg, report)
+                elif args.command == "uninstall":
                     if util.runner_busy():
                         raise maintenance.MaintenanceDeferred("uninstall deferred: a job is running")
                     code = cmd_uninstall(args, repo_root)

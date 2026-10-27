@@ -1,43 +1,46 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
 # SPDX-License-Identifier: MIT
 #
 
-# Shared configuration for every SchmiedmayerLab runner Mac. This file is
-# committed — it must never contain secrets. The GitHub PAT lives in each
-# machine's login Keychain instead (./setup store-pat).
+# Shared runner configuration. Commit reviewed changes before provisioning VMs.
+# Never store secrets here. The PAT lives in the downloading machine's login
+# Keychain: the VM host for hosted runners, or the physical runner itself.
 
 [github]
 scope = "org"               # runners are registered org-wide
 owner = "SchmiedmayerLab"
 
 [runner]
-# name = "my-mac-mini"      # default: this machine's hostname
+# name = "my-mac-mini"      # saved install/VM name takes precedence; otherwise hostname
 labels = []                 # extra labels; self-hosted / macOS / ARM64 (X64 on
                             # Intel) are added automatically
 dir = "~/actions-runner"    # where the runner software lives
 work_dir = "_work.noindex"  # job workspaces, relative to dir; the .noindex
                             # suffix keeps Spotlight from indexing checkouts
 # group = "Default"         # org runner group
-cleanup_hooks = true        # reset simulators before each job, wipe
-                            # workspaces/caches after (hooks/*.sh)
+cleanup_hooks = true        # clean job workspaces and reset simulators before/after
+                            # jobs; retain runner control/tool directories (hooks/*.sh)
 
 [xcode]
 manage = true               # install/maintain Xcode releases via `xcodes`
-install_beta = true         # also keep the newest beta/RC (when newer than stable)
+install_beta = false        # RCs are eligible by default; optionally add newer betas
+track_latest = true         # retain the newest release/RC alongside exact pins
+pinned_versions = ["26.6"]   # confirm OS compatibility for every retained version
+default_version = "latest"  # newest retained release/RC; or an exact retained version
 platforms = ["all"]         # per-Xcode simulator/SDK downloads: ["all"], a list
                             # like ["iOS", "watchOS"], or [] to skip
 
 [brew]
 extra_formulae = []         # installed in addition to the built-in tool list
-extra_casks = []            # note: many casks need sudo to install; unattended
-                            # (boot-time) runs therefore skip cask installs/upgrades
+extra_casks = []            # guided installation requires this list to be empty;
+                            # unattended maintenance defers needed cask changes
 
 [boot]
-install_agent = true        # re-run this setup at every login/boot (LaunchAgent)
+install_agent = true        # re-run at user login and every six hours (LaunchAgent)
 # label = "com.selfhosted-runner.setup"
 
 [logging]

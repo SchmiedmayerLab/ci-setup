@@ -1,14 +1,12 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
 # SPDX-License-Identifier: MIT
 #
 
-"""Xcode releases via `xcodes`: keep the latest stable release, the previous
-minor release, and (optionally) the newest beta/RC installed — including
-simulator runtimes, SDKs and the Metal toolchain for each of them."""
+"""Maintain pinned and rolling Xcodes with their platforms and Metal tools."""
 
 from __future__ import annotations
 
@@ -72,7 +70,7 @@ class Release:
             kind, number = 2, self.pre[1]
         else:
             kind, number = 1, self.pre[1]
-        return (self.version, kind, number)
+        return (self.version + (0,) * (3 - len(self.version)), kind, number)
 
 
 class XcodeSetupError(SetupError):
@@ -157,27 +155,56 @@ def parse_installed(text: str) -> list[InstalledXcode]:
 
 
 def select_desired(
-    releases: list[Release], install_beta: bool
+    releases: list[Release], install_beta: bool, *, track_latest: bool = True,
+    pinned_versions: list[str] | None = None, default_version: str = "latest",
 ) -> tuple[list[Release], Release]:
-    """Pick (desired releases, latest stable): the newest stable release, the
-    newest release of the previous minor train, and — when it is newer than
-    the newest stable — the newest beta/RC."""
-    stables = [r for r in releases if not r.prerelease]
-    if not stables:
-        raise SetupError("could not parse any stable Xcode releases from `xcodes list`")
-    latest = max(stables, key=Release.sort_key)
-    latest_train = latest.version[:2]
-    previous_pool = [r for r in stables if r.version[:2] != latest_train]
-    previous = max(previous_pool, key=Release.sort_key) if previous_pool else None
-    beta = None
+    """Resolve retained releases and default before any install or cleanup."""
+    if install_beta and not track_latest:
+        raise SetupError("install_beta requires track_latest")
+    def key(identifier):
+        parsed = parse_identifier(identifier)
+        if parsed is None:
+            raise SetupError(f"Invalid exact Xcode version: {identifier}")
+        version, pre = parsed
+        return version + (0,) * (3 - len(version)), pre
+
+    def resolve(identifier, catalog):
+        matches = [release for release in catalog if key(release.identifier) == key(identifier)]
+        if not matches:
+            raise SetupError(f"Requested Xcode {identifier} is unavailable in the release catalog")
+        if len({release.build for release in matches}) != 1:
+            raise SetupError(f"Requested Xcode {identifier} has ambiguous builds in the release catalog")
+        return matches[0]
+
+    eligible = [r for r in releases if not r.pre or r.pre[0] == 'rc']
+    if track_latest and not eligible:
+        raise SetupError("could not parse any Xcode releases or release candidates from `xcodes list`")
+    desired = [max(eligible, key=Release.sort_key)] if track_latest else []
+    desired += [resolve(identifier, releases) for identifier in pinned_versions or []]
     if install_beta:
         newer_prereleases = [
-            r for r in releases if r.prerelease and r.version > latest.version
+            r for r in releases if r.pre and r.pre[0] == 'beta' and r.sort_key() > desired[0].sort_key()
         ]
         if newer_prereleases:
-            beta = max(newer_prereleases, key=Release.sort_key)
-    desired = [r for r in (latest, previous, beta) if r is not None]
-    return desired, latest
+            desired.append(max(newer_prereleases, key=Release.sort_key))
+    desired = list({key(release.identifier): release for release in desired}.values())
+    if not desired:
+        raise SetupError("Xcode policy must retain at least one release")
+    if default_version == "latest":
+        defaults = [release for release in desired if not release.pre or release.pre[0] == 'rc']
+        if not defaults:
+            raise SetupError("default_version=latest requires a retained release or RC")
+        preferred = max(defaults, key=Release.sort_key)
+    else:
+        preferred = resolve(default_version, desired)
+    return desired, preferred
+
+
+def selected_releases(releases: list[Release], cfg: Config) -> tuple[list[Release], Release]:
+    return select_desired(releases, cfg.xcode_install_beta,
+                          track_latest=cfg.xcode_track_latest,
+                          pinned_versions=cfg.xcode_pinned_versions,
+                          default_version=cfg.xcode_default_version)
 
 
 def _xcodebuild(args: list[str], developer_dir: Path, *, check: bool = True):
@@ -271,20 +298,24 @@ def _post_install(cfg: Config, release: Release, app_path: Path) -> None:
     )
     if status.returncode != 0:
         log(f"Xcode {release.identifier}: running first-launch setup")
-        result = _xcodebuild(["-runFirstLaunch"], developer_dir, check=False)
-        if result.returncode != 0:
-            if util.INTERACTIVE:
-                log(f"Xcode {release.identifier}: retrying first-launch setup with sudo")
-                # sudo strips DEVELOPER_DIR; use this Xcode's executable.
-                util.sudo_run(
-                    [developer_dir / "usr/bin/xcodebuild", "-runFirstLaunch"],
-                    timeout=30 * 60,
-                )
-            elif not _unattended_first_launch(developer_dir):
-                raise SetupError(
-                    f"Xcode {release.identifier}: first-launch setup failed; "
-                    "run ./setup interactively on the runner"
-                )
+        bootstrap = bool(os.environ.get('SUDO_ASKPASS') and os.environ.get('RUNNER_BOOTSTRAP_PASSWORD'))
+        executable = developer_dir / 'usr/bin/xcodebuild'
+        if bootstrap:
+            # The host supplies the existing guest credential transiently.
+            # Keep scheduled guest runs and the sudo policy unchanged.
+            run(['sudo', '-A', executable, '-license', 'accept'], capture=True)
+            run(['sudo', '-A', executable, '-runFirstLaunch'], timeout=30 * 60)
+        elif util.INTERACTIVE:
+            util.sudo_run([executable, '-license', 'accept'])
+            # sudo strips DEVELOPER_DIR; use this Xcode's executable.
+            util.sudo_run([executable, '-runFirstLaunch'], timeout=30 * 60)
+        elif not _unattended_first_launch(developer_dir):
+            # An unprivileged attempt can wait on a GUI authorization dialog
+            # until its timeout, never reaching a return-code-based fallback.
+            raise SetupError(
+                f"Xcode {release.identifier}: first-launch setup failed; "
+                "complete authorization interactively on the runner during maintenance"
+            )
         recheck = run(
             ["/usr/bin/xcodebuild", "-checkFirstLaunchStatus"],
             env=dict(os.environ, DEVELOPER_DIR=str(developer_dir)),
@@ -342,8 +373,47 @@ def runner_developer_dir(cfg: Config) -> Path | None:
         raise SetupError("runner DEVELOPER_DIR must be absolute")
     return path.resolve()
 
+def host_archives():
+    """Read the host's pinned catalog without authenticating inside a guest."""
+    directory = Path.home() / 'Library/Application Support/runner-bootstrap'
+    manifest = directory / 'xcode-archives.json'
+    if not manifest.exists():
+        return None
+    try:
+        if manifest.stat().st_size > 64 * 1024:
+            raise ValueError('oversized manifest')
+        data = json.loads(manifest.read_text())
+        if data['schema'] != 1 or not data['archives']:
+            raise ValueError('unsupported or empty manifest')
+        releases, archives = [], {}
+        for item in data['archives']:
+            parsed = parse_identifier(item['identifier'])
+            build, checksum = item['build'], item['sha256']
+            path = Path(item['path'])
+            if (parsed is None or not re.fullmatch(r'[0-9A-Za-z]+', build)
+                    or not re.fullmatch(r'[0-9a-f]{64}', checksum)
+                    or path != directory / ('Xcode-' + build + '.xip')
+                    or item['identifier'] in archives):
+                raise ValueError('invalid archive entry')
+            releases.append(Release(*parsed, item['identifier'], build))
+            archives[item['identifier']] = (path, checksum)
+        return releases, archives
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SetupError('Invalid host Xcode manifest; rerun host configure') from error
+
+
+def verified_archive(entry):
+    path, expected = entry
+    if not path.is_file() or path.is_symlink():
+        raise SetupError('Host Xcode archive is missing; rerun host configure')
+    with path.open('rb') as stream:
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
+            raise SetupError('Host Xcode archive checksum mismatch; rerun host configure')
+    return path
+
+
 def ensure(cfg: Config) -> Path | None:
-    """Return a ready latest stable developer directory, or report failure.
+    """Return the ready policy-selected developer directory, or report failure.
 
     Failed discovery, installs or readiness checks preserve all installed
     Xcodes, runtimes and the current selection. The caller owns the runner
@@ -360,14 +430,17 @@ def ensure(cfg: Config) -> Path | None:
         )
 
     failures = []
-    refresh = run(["xcodes", "update"], check=False, capture=True, timeout=10 * 60)
-    if refresh.returncode != 0:
-        message = "`xcodes update` failed; cached releases cannot confirm the latest Xcode"
-        failures.append(message)
-        warn(message)
-
-    releases = parse_list(output(["xcodes", "list"], timeout=5 * 60))
-    desired, latest = select_desired(releases, cfg.xcode_install_beta)
+    supplied = host_archives()
+    if supplied is not None:
+        releases, archives = supplied
+    else:
+        refresh = run(["xcodes", "update"], check=False, capture=True, timeout=10 * 60)
+        if refresh.returncode != 0:
+            message = "`xcodes update` failed; cached releases cannot confirm the latest Xcode"
+            failures.append(message)
+            warn(message)
+        releases = parse_list(output(["xcodes", "list"], timeout=5 * 60))
+    desired, latest = selected_releases(releases, cfg)
     installed = parse_installed(output(["xcodes", "installed"]))
     installed_builds = {(i.identifier, i.build) for i in installed}
     for release in desired:
@@ -376,18 +449,21 @@ def ensure(cfg: Config) -> Path | None:
             continue
         install_cmd = [
             "xcodes", "install", "--experimental-unxip", "--empty-trash",
+            *([] if util.INTERACTIVE else ["--no-superuser"]),
             release.identifier,
         ]
         log(f"Installing Xcode {release.identifier}")
         try:
+            if supplied is not None:
+                install_cmd += ['--path', str(verified_archive(archives[release.identifier]))]
             # Downloading and extracting a full Xcode can be quiet for a long
             # time. Use an absolute ceiling, not an output-idle timeout.
             run(install_cmd, stdin_devnull=not util.INTERACTIVE, timeout=4 * 60 * 60)
         except SetupError as e:
             message = (
                 f"Xcode {release.identifier} install failed: {e}; "
-                "if Apple ID authentication expired, rerun ./setup "
-                "interactively on the CI runner to authenticate and retry"
+                + ("rerun host configure to refresh the archive" if supplied is not None else
+                   "if Apple authentication expired, rerun ./setup interactively to authenticate and retry")
             )
             failures.append(message)
             warn(message)
@@ -576,7 +652,7 @@ def _cleanup_runtimes(developer_dirs: list[Path]) -> None:
 
 
 def _ensure_global_selection(developer_dir: Path) -> None:
-    """Point the system-wide xcode-select at the latest stable Xcode. CI jobs
+    """Point the system-wide xcode-select at the policy default. CI jobs
     don't depend on this (they pin DEVELOPER_DIR via the runner's .env), but
     it keeps SSH sessions and anything else on the machine consistent.
     Passwordless via the sudoers rule; `sudo -n` never prompts."""
@@ -635,9 +711,12 @@ def ensure_wwdr_certificate() -> None:
             )
             return
         log("Installing the Apple WWDR intermediate certificate (sudo)")
+        # An intermediate inherits trust from Apple's system root. Verify the
+        # chain, then import it without creating a custom trust-root override.
+        run(["security", "verify-cert", "-c", cert, "-p", "basic"], capture=True)
         util.sudo_run(
             [
-                "security", "add-trusted-cert", "-d", "-r", "trustRoot",
+                "security", "add-certificates",
                 "-k", "/Library/Keychains/System.keychain",
                 cert,
             ]

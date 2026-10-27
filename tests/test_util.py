@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -21,6 +21,17 @@ from cisetup import runlog, util  # noqa: E402
 
 
 class RedactTests(unittest.TestCase):
+    def test_sudo_askpass_is_only_used_during_explicit_initial_setup(self):
+        import os
+        with patch.dict(os.environ, {'SUDO_ASKPASS': '/test/askpass'}), patch.object(util, 'run') as run:
+            with patch.object(util, 'INTERACTIVE', True):
+                util.sudo_run(['synthetic-command'])
+                self.assertEqual(run.call_args.args[0], ['sudo', '-A', 'synthetic-command'])
+            run.reset_mock()
+            with patch.object(util, 'INTERACTIVE', False), self.assertRaises(util.SetupError):
+                util.sudo_run(['synthetic-command'])
+            run.assert_not_called()
+
     def test_redacts_token_values(self):
         argv = ["./config.sh", "--url", "https://github.com/x/y", "--token", "AAAA", "--name", "mac"]
         self.assertEqual(
