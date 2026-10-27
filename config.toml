@@ -28,6 +28,9 @@ cleanup_hooks = true        # clean job workspaces and reset simulators before/a
 [xcode]
 manage = true               # install/maintain Xcode releases via `xcodes`
 install_beta = false        # RCs are eligible by default; optionally add newer betas
+track_latest = true         # retain the newest release/RC alongside exact pins
+pinned_versions = ["26.6"]   # confirm OS compatibility for every retained version
+default_version = "latest"  # newest retained release/RC; or an exact retained version
 platforms = ["all"]         # per-Xcode simulator/SDK downloads: ["all"], a list
                             # like ["iOS", "watchOS"], or [] to skip
 

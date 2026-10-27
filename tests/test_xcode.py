@@ -259,6 +259,46 @@ class XcodeMaintenanceTests(unittest.TestCase):
         self.remove.assert_not_called()
         self.runtimes.assert_not_called()
 
+    def test_pinned_and_latest_toolchains_are_both_prepared_and_retained(self):
+        self.cfg.xcode_pinned_versions = ['16.3']
+        xcode.ensure(self.cfg)
+        self.assertEqual([call.args[1].identifier for call in self.post_install.call_args_list], ['16.4', '16.3'])
+        self.assertEqual([release.identifier for release in self.remove.call_args.args[1]], ['16.4', '16.3'])
+        self.select.assert_called_once_with(pathlib.Path('/fake/Xcode-16.4.app/Contents/Developer'))
+
+    def test_missing_pin_prevents_install_selection_and_cleanup(self):
+        self.cfg.xcode_pinned_versions = ['26.6']
+        with self.assertRaisesRegex(SetupError, '26.6.*unavailable'):
+            xcode.ensure(self.cfg)
+        self.post_install.assert_not_called()
+        self.assert_preserved()
+        self.assertFalse(any(call.args[0][:2] == ['xcodes', 'install'] for call in self.run.call_args_list))
+
+    def test_explicit_older_default_keeps_both_and_returns_its_developer_directory(self):
+        self.cfg.xcode_pinned_versions = ['16.3']
+        self.cfg.xcode_default_version = '16.3'
+        selected = xcode.ensure(self.cfg)
+        self.assertEqual(selected, pathlib.Path('/fake/Xcode-16.3.app/Contents/Developer'))
+        self.select.assert_called_once_with(selected)
+        self.assertEqual([release.identifier for release in self.remove.call_args.args[1]], ['16.4', '16.3'])
+
+    def test_pinned_preparation_failure_prevents_selection_and_cleanup(self):
+        self.cfg.xcode_pinned_versions = ['16.3']
+        self.post_install.side_effect = [None, SetupError('pinned first launch or platforms incomplete')]
+        with self.assertRaisesRegex(xcode.XcodeSetupError, 'pinned first launch or platforms incomplete'):
+            xcode.ensure(self.cfg)
+        self.assertEqual(self.post_install.call_count, 2)
+        self.assert_preserved()
+
+    def test_both_retained_toolchains_reach_runtime_cleanup(self):
+        self.cfg.xcode_pinned_versions = ['16.3']
+        self.remove.return_value = parse_installed(self.installed)
+        xcode.ensure(self.cfg)
+        self.runtimes.assert_called_once_with([
+            pathlib.Path('/fake/Xcode-16.3.app/Contents/Developer'),
+            pathlib.Path('/fake/Xcode-16.4.app/Contents/Developer'),
+        ])
+
     def test_failed_install_preserves_working_xcodes_and_runtimes(self):
         self.installed = "16.3 (16E140) /fake/Xcode-16.3.app\n"
         def command(cmd, **kwargs):
@@ -390,9 +430,9 @@ class XcodeReadinessTests(unittest.TestCase):
         self.assertEqual(len([c for c in self.run.call_args_list if c.args[0][1].startswith("-download")]), 3)
 
     def test_first_launch_recheck_must_succeed_before_downloads(self):
+        self._patch('_unattended_first_launch', return_value=True)
         self.run.side_effect = [
             subprocess.CompletedProcess([], 1, "", ""),
-            subprocess.CompletedProcess([], 0, "", ""),
             subprocess.CompletedProcess([], 1, "", ""),
         ]
         with self.assertRaisesRegex(SetupError, "still incomplete"):
@@ -409,7 +449,6 @@ class XcodeReadinessTests(unittest.TestCase):
         self.run.side_effect = [
             subprocess.CompletedProcess([], 1, '', ''),
             subprocess.CompletedProcess([], 0, '', ''),
-            subprocess.CompletedProcess([], 1, '', ''),
             subprocess.CompletedProcess([], 0, '', ''),
             subprocess.CompletedProcess([], 0, '', ''),
             subprocess.CompletedProcess([], 0, '', ''),
@@ -421,7 +460,8 @@ class XcodeReadinessTests(unittest.TestCase):
         commands = [call.args[0] for call in self.run.call_args_list]
         executable = self.app / 'Contents/Developer/usr/bin/xcodebuild'
         self.assertEqual(commands[1], ['sudo', '-A', executable, '-license', 'accept'])
-        self.assertEqual(commands[3], ['sudo', '-A', executable, '-runFirstLaunch'])
+        self.assertEqual(commands[2], ['sudo', '-A', executable, '-runFirstLaunch'])
+        self.assertNotIn(['/usr/bin/xcodebuild', '-runFirstLaunch'], commands)
         self.assertNotIn('private-test-password', str(commands))
         self.assertTrue(any('-downloadAllPlatforms' in command for command in commands))
         self.assertTrue(any('MetalToolchain' in command for command in commands))
@@ -445,8 +485,113 @@ class XcodeReadinessTests(unittest.TestCase):
             xcode._unattended_first_launch(self.app / "Contents/Developer")
         self.assertEqual(self.run.call_args.args[0][-1], "/fake/Previous/Developer")
 
+    def test_unattended_preparation_never_attempts_gui_first_launch(self):
+        self.run.side_effect = lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 1 if self.run.call_count == 1 else 0, '', '')
+        helper = self._patch('_unattended_first_launch', return_value=True)
+        xcode._post_install(self.cfg, self.release, self.app)
+        helper.assert_called_once_with(self.app / 'Contents/Developer')
+        self.assertFalse(any('-runFirstLaunch' in c.args[0] for c in self.run.call_args_list))
+        self.assertEqual(sum('-checkFirstLaunchStatus' in c.args[0] for c in self.run.call_args_list), 2)
+
+    def test_unattended_failure_or_timeout_prevents_component_downloads(self):
+        for failure in (False, SetupError('first launch timed out')):
+            with self.subTest(failure=failure):
+                self.run.reset_mock()
+                self.run.return_value = subprocess.CompletedProcess([], 1, '', '')
+                options = {'side_effect': failure} if isinstance(failure, Exception) else {'return_value': failure}
+                with mock.patch.object(xcode, '_unattended_first_launch', **options), self.assertRaises(SetupError):
+                    xcode._post_install(self.cfg, self.release, self.app)
+                self.assertEqual(self.run.call_count, 1)
+
+    def test_interactive_first_launch_uses_exact_xcode_and_rechecks(self):
+        self.run.side_effect = lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 1 if self.run.call_count == 1 else 0, '', '')
+        with mock.patch.object(xcode.util, 'INTERACTIVE', True), \
+                mock.patch.object(xcode.util, 'sudo_run') as sudo:
+            xcode._post_install(self.cfg, self.release, self.app)
+        executable = self.app / 'Contents/Developer/usr/bin/xcodebuild'
+        self.assertEqual(sudo.call_args_list, [
+            mock.call([executable, '-license', 'accept']),
+            mock.call([executable, '-runFirstLaunch'], timeout=30 * 60),
+        ])
+        self.assertFalse(any('-runFirstLaunch' in c.args[0] for c in self.run.call_args_list))
+
+    def test_unattended_helper_restores_selection_after_success_failure_and_timeout(self):
+        for result in (subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1),
+                       SetupError('command timed out')):
+            with self.subTest(result=result):
+                self.run.reset_mock()
+                self.run.side_effect = [
+                    subprocess.CompletedProcess([], 0, '/fake/Previous/Developer\n', ''),
+                    subprocess.CompletedProcess([], 0), result,
+                    subprocess.CompletedProcess([], 0),
+                ]
+                if isinstance(result, Exception):
+                    with self.assertRaisesRegex(SetupError, 'timed out'):
+                        xcode._unattended_first_launch(self.app / 'Contents/Developer')
+                else:
+                    self.assertEqual(xcode._unattended_first_launch(self.app / 'Contents/Developer'),
+                                     result.returncode == 0)
+                self.assertEqual(self.run.call_args.args[0],
+                                 ['sudo', '-n', '/usr/bin/xcode-select', '-s', '/fake/Previous/Developer'])
+                self.assertEqual(self.run.call_args_list[2],
+                                 mock.call(['sudo', '-n', '/usr/bin/xcodebuild', '-runFirstLaunch'],
+                                           check=False, timeout=30 * 60))
+
+    def test_unattended_helper_denied_selection_never_runs_first_launch(self):
+        self.run.side_effect = [
+            subprocess.CompletedProcess([], 0, '/fake/Previous/Developer\n', ''),
+            subprocess.CompletedProcess([], 1),
+        ]
+        self.assertFalse(xcode._unattended_first_launch(self.app / 'Contents/Developer'))
+        self.assertEqual(self.run.call_count, 2)
+
+    def test_unattended_helper_reports_failed_selection_restoration(self):
+        self.run.side_effect = [
+            subprocess.CompletedProcess([], 0, '/fake/Previous/Developer\n', ''),
+            subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 1),
+        ]
+        with self.assertRaisesRegex(SetupError, 'could not restore'):
+            xcode._unattended_first_launch(self.app / 'Contents/Developer')
+
 
 class RuntimeCleanupTests(unittest.TestCase):
+    def test_pinned_runtime_survives_repeated_cleanup_and_rolling_upgrade(self):
+        catalog = '26.6 (PIN)\n27.2 Release Candidate (RC)\n'
+        installed = [xcode.InstalledXcode(r.identifier, r.build, '/fake/' + r.build + '.app')
+                     for r in parse_list(catalog)]
+        runtimes = {
+            'pin': self.runtime('PIN-RUNTIME', version='26.5'),
+            'rolling': self.runtime('RC-RUNTIME', version='27.2'),
+            'obsolete': self.runtime('OLD', version='27.1'),
+        }
+        for upgraded in (False, False, True, True):
+            if upgraded and 'NEW' not in {i.build for i in installed}:
+                catalog += '27.3 (NEW)\n'
+                installed.append(xcode.InstalledXcode('27.3', 'NEW', '/fake/NEW.app'))
+                runtimes['new'] = self.runtime('NEW-RUNTIME', version='27.3')
+            desired, _ = xcode.select_desired(parse_list(catalog), False, pinned_versions=['26.6'])
+            def command(cmd, **kwargs):
+                if cmd[:2] == ['xcodes', 'uninstall']:
+                    return subprocess.CompletedProcess(cmd, 0)
+                if cmd[2:5] == ['runtime', 'match', 'list']:
+                    dev = kwargs['env']['DEVELOPER_DIR']
+                    version = '26.5.1' if 'PIN.app' in dev else '27.3' if 'NEW.app' in dev else '27.2'
+                    return self.result({'iOS': self.match('SDK-BUILD', version=version)})
+                if cmd[2:4] == ['runtime', 'list']:
+                    return self.result(runtimes)
+                if cmd[2:4] == ['runtime', 'delete']:
+                    del runtimes[cmd[-1]]
+                    return subprocess.CompletedProcess(cmd, 0)
+                raise AssertionError(cmd)
+            with mock.patch.object(xcode, 'run', side_effect=command):
+                installed = xcode._remove_unwanted_xcodes(installed, desired)
+                xcode._cleanup_runtimes([pathlib.Path(i.path) / 'Contents/Developer' for i in installed])
+            self.assertIn('26.6', {i.identifier for i in installed})
+            self.assertEqual(set(runtimes), {'pin', 'new' if upgraded else 'rolling'})
+
     @staticmethod
     def result(value):
         return subprocess.CompletedProcess([], 0, json.dumps(value), "")

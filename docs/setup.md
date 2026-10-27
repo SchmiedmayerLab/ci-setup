@@ -214,7 +214,8 @@ Closing a laptop lid can still suspend it.
    Confirm before downloading the image or creating VMs.
    A physical runner instead requests its administrator password before tool installation.
 4. Download and verify the image, save its pin, install the guests and create their accounts.
-   Install the newest released Xcode or Release Candidate, configured simulator platforms and Metal tools, then register runners and load services.
+   Install the Xcode versions selected by the [retention policy](xcode-versions.md), configured simulator platforms and Metal tools, then register runners and load services.
+   The supplied configuration retains 26.6 alongside the newest release or Release Candidate, which remains the default.
    The host downloads Xcode once and transfers verified archives to its guests.
 
 After the initial inputs, commands run without terminal prompts.
@@ -269,6 +270,8 @@ Treat these as separate checkpoints rather than one success message:
 1. **Prerequisites and access checked:** tools are installed, the saved layout is valid, and the credential/UTM background probe passes.
    This probe does not establish guest SSH access.
 2. **Guests configured:** both owned VMs have the expected resources and names; each guest reports healthy runner status, selected Xcode, required platforms and Metal tools.
+   Verify every retained Xcode, including 26.6 in the supplied policy, with its own SDK-compatible runtimes and exact build/path.
+   Check that the global selection and runner `DEVELOPER_DIR` agree with the configured default.
    `host status` reports VM ownership and installation state; `phase = ready` alone is not runner readiness.
 3. **Background operation verified:** both installed host agents have completed successfully, including an actual Xcode refresh that reaches the guests from its LaunchAgent context.
    A loaded or still-running agent has not yet proved successful completion.
@@ -276,8 +279,11 @@ Treat these as separate checkpoints rather than one success message:
    After maintenance, allow a bounded reconnection interval (for example, up to five minutes, checking every 30 seconds) and record when each original registration returns online.
    If one remains offline, inspect its listener and sanitized connection diagnostics; do not repeatedly rerun provisioning or replace its registration.
 4. **Recovery verified:** coordinated guest restarts restore automatic login, SSH and the same runner identities; a coordinated host restart restores both guests after manual FileVault unlock and host login.
+   After startup maintenance finishes, recheck both toolchains, their runtime families and the absence of pending recovery state.
    Verify locked-session behavior separately from restart, logout and sleep.
-5. **CI verified:** with approval for the exact workflow actions, run the validation workflow on each new runner, run both concurrently, and exercise cleanup and busy-job deferral through real jobs.
+5. **CI verified:** with approval for the exact workflow actions, run the [validation matrix](hosts.md#validate-the-runners) for both the default Xcode and 26.6 on each runner, and exercise cleanup and busy-job deferral through real jobs.
+   Jobs on different runners can execute concurrently; jobs on the same runner execute sequentially.
+   The workflow must exist on the default branch, and each deployed checkout must be clean, signed and match the dispatched revision.
    SSH-only Swift, simulator and Metal checks remain useful but do not prove GitHub job integration.
 
 Record the tested source revision, successful checkpoints and unresolved failures.
@@ -298,7 +304,10 @@ Do not mark installation fully validated while a background agent fails or requi
 | SSH is unavailable immediately after guest first boot | Allow the guided SSH wait to finish and inspect first boot in UTM. A transient first-boot connection failure does not justify recreating the VM. |
 | Provisioning is interrupted | Inspect `./setup host status --config ~/runner-host.toml`, then resume with the same configuration and names after checking the saved owned UUIDs. Do not delete state to bypass an error. |
 | Refresh fails before guest maintenance starts | Inspect `~/Library/Application Support/runner-host/xcode-refresh.log` for the failing host phase; an older guest `converge.log` cannot explain a connection or archive-staging failure. |
-| Tools are installed but a real workflow cannot be dispatched | Check that the workflow is published and available for dispatch, and that separately approved workflow credentials have the required repository access. Runner-registration access alone is not dispatch permission. |
+| Tools are installed but a real workflow cannot be dispatched | Check that the workflow exists on the default branch and is available for dispatch, and that separately approved workflow credentials have the required repository access. Runner-registration access alone is not dispatch permission. |
+| `softwareupdate` reached 100% or exited zero, but the old OS still appears | Follow the [macOS update runbook](macos-updates.md#monitor-preparation-and-reboot-separately). Check Apple's active operation and restart readiness; do not start another installer or declare the OS updated before verifying the build after reboot. |
+| Runner stays offline in Xcode first-launch maintenance after an OS update | Inspect the current phase and `xcodebuild -checkFirstLaunchStatus`; follow [guarded first-launch recovery](macos-updates.md#xcode-first-launch-after-an-os-update). Do not kill unrelated installers or bypass the existing maintenance lock and sudo policy. |
+| Host update or restart asks for another password | Complete it privately in the operator's local Terminal or System Settings. Earlier sudo authorization does not guarantee later volume-owner authentication; keep host restart approval explicit. |
 
 Guest provisioning logs are under `~/Library/Application Support/runner-bootstrap/` inside each guest.
 Use the failing phase's `bootstrap.log`, `privileged-setup.log`, `registration.log` or `converge.log` locally; do not publish raw authentication or registration output.

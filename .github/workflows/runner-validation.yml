@@ -27,22 +27,37 @@ permissions:
 
 jobs:
   validate:
-    name: ${{ matrix.runner }}
+    name: ${{ matrix.runner }} / Xcode ${{ matrix.xcode }}
     strategy:
       fail-fast: false
       matrix:
         runner: ["${{ inputs.first_runner }}", "${{ inputs.second_runner }}"]
+        xcode: [default, "26.6"]
     # Provisioning adds the display name as a custom runner label.
     runs-on: [self-hosted, macOS, ARM64, "${{ matrix.runner }}"]
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify deployed source
+        run: |
+          deployed="$HOME/runner-setup"
+          test "$(git -C "$deployed" rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git -C "$deployed" status --porcelain --untracked-files=normal)"
+          git -C "$deployed" verify-commit HEAD
+          printf 'Verified setup revision: %s\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Select the installed toolchain for this job
+        env:
+          XCODE_SELECTOR: ${{ matrix.xcode }}
+        run: python3 -m cisetup.validation select-xcode "$XCODE_SELECTOR"
       - name: Check runner identity and toolchain
         env:
           EXPECTED_RUNNER: ${{ matrix.runner }}
         run: |
           test "$RUNNER_NAME" = "$EXPECTED_RUNNER"
           test "$(uname -m)" = arm64
-          sw_vers
+          sw_vers | tee -a "$GITHUB_STEP_SUMMARY"
           xcodebuild -version
           xcodebuild -checkFirstLaunchStatus
           xcodebuild -showsdks
@@ -116,40 +131,8 @@ jobs:
           SWIFT
           xcrun swiftc "$project/smoke.swift" -o "$project/smoke"
           "$project/smoke" "$project/smoke.metallib"
-      - name: Boot each simulator platform
-        shell: python3 {0}
-        run: |
-          import json
-          import re
-          import subprocess
-
-          def simctl(*args, timeout=300):
-              return subprocess.check_output(["xcrun", "simctl", *args], text=True, timeout=timeout).strip()
-
-          inventory = json.loads(simctl("list", "-j"))
-          for platform, family in (("iOS", "iPhone"), ("tvOS", "Apple TV"),
-                                   ("watchOS", "Apple Watch"), ("visionOS", "Apple Vision")):
-              candidates = [r for r in inventory["runtimes"]
-                            if r.get("isAvailable") and r["name"].startswith(platform + " ")]
-              if not candidates:
-                  raise RuntimeError("Missing available " + platform + " runtime")
-              runtime = max(candidates, key=lambda r: (
-                  tuple(int(p) for p in r["version"].split(".")),
-                  not bool(re.search(r"[a-z]$", r["buildversion"])), r["buildversion"]))
-              supported = {d["identifier"] for d in runtime.get("supportedDeviceTypes", [])}
-              devices = [d for d in inventory["devicetypes"] if family in d["name"]
-                         and (not supported or d["identifier"] in supported)]
-              if not devices:
-                  raise RuntimeError("Missing compatible " + platform + " device type")
-              device = simctl("create", "Runner Validation " + platform,
-                              devices[-1]["identifier"], runtime["identifier"])
-              try:
-                  simctl("boot", device)
-                  simctl("bootstatus", device, "-b")
-                  print(platform + " " + runtime["version"] + " (" + runtime["buildversion"] + "): booted")
-              finally:
-                  subprocess.run(["xcrun", "simctl", "shutdown", device], capture_output=True, timeout=60)
-                  simctl("delete", device, timeout=60)
+      - name: Boot SDK-compatible simulator runtimes
+        run: python3 -m cisetup.validation simulators
       - name: Check cleanup on disposable job fixtures
         id: cleanup_probe
         shell: python3 {0}

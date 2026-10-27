@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import tomllib
 from dataclasses import dataclass, field
@@ -83,6 +84,9 @@ class Config:
     # [xcode]
     xcode_manage: bool = True
     xcode_install_beta: bool = False
+    xcode_track_latest: bool = True
+    xcode_pinned_versions: list[str] = field(default_factory=list)
+    xcode_default_version: str = "latest"
     xcode_platforms: list[str] = field(default_factory=lambda: ["all"])
 
     # [brew]
@@ -214,8 +218,33 @@ def load(repo_root: Path) -> Config:
         raise SetupError('config.toml: runner.group only applies to github.scope = "org"')
     cfg.cleanup_hooks = bool(runner.get("cleanup_hooks", True))
 
-    cfg.xcode_manage = bool(xcode.get("manage", True))
-    cfg.xcode_install_beta = bool(xcode.get("install_beta", False))
+    unknown_xcode = set(xcode) - {
+        "manage", "install_beta", "track_latest", "pinned_versions", "default_version", "platforms",
+    }
+    if unknown_xcode:
+        raise SetupError(
+            "config.toml: unsupported xcode keys: " + ", ".join(sorted(unknown_xcode))
+            + "; use track_latest, pinned_versions and default_version; "
+            "migrate track/versions policies explicitly before maintenance"
+        )
+    for key in ("manage", "install_beta", "track_latest"):
+        if key in xcode and type(xcode[key]) is not bool:
+            raise SetupError(f"config.toml: xcode.{key} must be a boolean")
+    cfg.xcode_manage = xcode.get("manage", True)
+    cfg.xcode_install_beta = xcode.get("install_beta", False)
+    cfg.xcode_track_latest = xcode.get("track_latest", True)
+    cfg.xcode_pinned_versions = _str_list(xcode.get("pinned_versions", []), "xcode.pinned_versions")
+    cfg.xcode_default_version = _str(xcode, "default_version", "xcode.default_version", "latest")
+    version_pattern = r"\d+(?:\.\d+){0,2}(?: Beta(?: \d+)?| Release Candidate(?: \d+)?)?"
+    for version in cfg.xcode_pinned_versions:
+        if re.fullmatch(version_pattern, version) is None:
+            raise SetupError("config.toml: xcode.pinned_versions requires exact Xcode version identifiers")
+    if cfg.xcode_default_version != "latest" and re.fullmatch(version_pattern, cfg.xcode_default_version) is None:
+        raise SetupError("config.toml: xcode.default_version must be latest or an exact Xcode version identifier")
+    if not cfg.xcode_track_latest and not cfg.xcode_pinned_versions:
+        raise SetupError("config.toml: disabling xcode.track_latest requires pinned_versions")
+    if cfg.xcode_install_beta and not cfg.xcode_track_latest:
+        raise SetupError("config.toml: xcode.install_beta requires track_latest")
     cfg.xcode_platforms = _str_list(xcode.get("platforms", ["all"]), "xcode.platforms")
 
     cfg.brew_extra_formulae = _str_list(brew.get("extra_formulae", []), "brew.extra_formulae")

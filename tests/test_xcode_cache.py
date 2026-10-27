@@ -18,6 +18,40 @@ from cisetup.util import SetupError
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_policy_downloads_and_stages_each_pinned_and_latest_archive_once(self):
+        self.cfg.xcode_pinned_versions = ['26.6']
+        def catalog(args, **kwargs):
+            if args[0] == 'list':
+                return '26.6 (PIN)\n' + self.fake_command(args, **kwargs)
+            return self.fake_command(args, **kwargs)
+        self.command.side_effect = catalog
+        first = xcode_cache.prepare(self.cfg)
+        self.assertEqual(first, xcode_cache.prepare(self.cfg))
+        self.assertEqual([entry['identifier'] for entry in first['archives']], ['27.2 Release Candidate', '26.6'])
+        downloads = [call for call in self.command.call_args_list if call.args[0][0] == 'download']
+        self.assertEqual(len(downloads), 2)
+        connection = MagicMock()
+        xcode_cache.stage(connection, first, '/guest/staging')
+        self.assertEqual(connection.upload_file.call_count, 2)
+        self.assertEqual(len(json.loads(connection.upload.call_args.args[0])['archives']), 2)
+
+        staging = self.root / 'Library/Application Support/runner-bootstrap'
+        staging.mkdir(parents=True)
+        xcode_cache.stage(connection, first, str(staging))
+        (staging / 'xcode-archives.json').write_bytes(connection.upload.call_args.args[0])
+        with patch.object(Path, 'home', return_value=self.root):
+            releases, _ = xcode.host_archives()
+        desired, preferred = xcode.selected_releases(releases, self.cfg)
+        self.assertEqual([r.identifier for r in desired], ['27.2 Release Candidate', '26.6'])
+        self.assertEqual(preferred.identifier, '27.2 Release Candidate')
+
+    def test_missing_pin_prevents_host_downloads_and_cache_creation(self):
+        self.cfg.xcode_pinned_versions = ['26.6']
+        with self.assertRaisesRegex(host.HostError, '26.6.*unavailable'):
+            xcode_cache.prepare(self.cfg)
+        self.assertFalse((self.root / 'xcode-cache').exists())
+        self.assertFalse(any(call.args[0][0] == 'download' for call in self.command.call_args_list))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

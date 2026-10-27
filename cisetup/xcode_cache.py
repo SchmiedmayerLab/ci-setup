@@ -72,7 +72,7 @@ def prepare(cfg):
     command(['update'])
     listing = command(['list'])
     try:
-        desired, preferred = xcode.select_desired(xcode.parse_list(listing), cfg.xcode_install_beta)
+        desired, preferred = xcode.selected_releases(xcode.parse_list(listing), cfg)
     except SetupError as error:
         raise host.HostError(str(error)) from error
     cache = host.STATE / 'xcode-cache'

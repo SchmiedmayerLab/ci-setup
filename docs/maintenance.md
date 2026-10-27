@@ -10,6 +10,8 @@ SPDX-License-Identifier: MIT
 Follow the organization’s [contribution guidelines](https://github.com/SchmiedmayerLab/.github/blob/main/CONTRIBUTING.md).
 This guide covers project-specific diagnosis and testing.
 [AGENTS.md](../AGENTS.md) describes the constraints for automated work.
+For an operational OS update on an existing host and its guests, use the [macOS update runbook](macos-updates.md).
+Updating setup source with `./setup update` on a runner is separate from installing macOS.
 
 Apply the [repository standards](https://github.com/SchmiedmayerLab/.github/blob/main/REPOSITORY_STANDARDS.md) when changing documentation, metadata or CI.
 Keep the README's required badge order, fixed closing sections and light/dark footers.
@@ -72,9 +74,11 @@ raise SystemExit(not unittest.TextTestRunner().run(suite).wasSuccessful())
 PY
 flake8 --select=F,E9 cisetup tests bin/ci-setup bin/check-docs bin/runner-cleanup
 python3 bin/check-docs
-zsh -n setup host/ssh-askpass
+zsh -n setup
+zsh -n host/ssh-askpass
 bash -n host/bootstrap-guest.sh
-bash -n hooks/job-started.sh hooks/job-completed.sh
+bash -n hooks/job-started.sh
+bash -n hooks/job-completed.sh
 reuse lint
 git diff --check
 ```
@@ -111,6 +115,10 @@ Leave the personal agreement unchecked for the submitting author.
 Describe the observed failure, resulting behavior, versions tested and remaining limitations.
 Include a reproducible test without secrets.
 Inspect the diff and metadata, sign commits according to the user's configured policy, and verify signatures.
+For an existing PR, add a follow-up commit on its branch and preserve the published history.
+If a normal push would not fast-forward, inspect the new remote work and prefer reconciliation that preserves published commits.
+Avoid force-pushing unless explicitly instructed after reviewing the exact history change, its impact and recovery options.
+Refresh the PR description and deployment instructions to name the new verified signed revision and its actual test results.
 Publishing a branch, issue or pull request is a separate, explicitly approved action.
 If a macOS change needs fresh user consent, document that boundary instead of bypassing it.
 
@@ -130,3 +138,35 @@ Online runners and successful locked-session refresh do not substitute for these
 Keep physical-host runner validation explicitly separate when it is outside the test scope.
 Follow [the completion checklist](setup.md#completion-checklist) and retain a sanitized reproduction before changing code or machine settings.
 The [prepare/automate flow](prepare.md) preserves these distinctions; test its real launchd handoff and failure recovery as well as mocked provisioning phases.
+
+## OS-update recovery regressions
+
+The [OS update runbook](macos-updates.md) separates two behaviors that must remain covered before adding automatic OS-update support.
+A successful `softwareupdate` client exit can precede the end of Apple's background operation, so a maintenance pause must not end merely because the client returned.
+An older unprivileged-first implementation can block on GUI authorization or raise a timeout before reaching its fallback.
+Current unattended preparation uses the existing authorized helper first.
+Tests must cover denied authorization, bounded failure/timeout, selection restoration, readiness rechecks, blocked cleanup, active-job deferral and service recovery.
+Do not encode termination of a particular PID or broad process matching as automatic recovery.
+
+Any future OS-update/drain command needs explicit ownership checks, a durable scheduling gate across reboot, private administrator/volume-owner input, separate host installation/restart approval, and resumed monitoring after login.
+Tests should distinguish successful client exit, active background preparation, a required second authentication prompt, reboot interruption, incomplete Xcode first launch, maintenance contention and delayed GitHub reconnection.
+Until such a command is reviewed and shipped, the runbook's operator workflow is not a claim that these lifecycle guarantees are implemented by the setup CLI.
+
+## Multi-version toolchain validation
+
+Retain a per-runner, per-Xcode acceptance matrix for changes to [Xcode policy](xcode-versions.md).
+Record source revision, macOS version/build, exact Xcode build/path, configured default, SDK/runtime versions, first launch, Swift tests, Metal compilation/compute and simulator boots.
+Use the newest release/RC and its compatible current runtimes for the default verification, plus the pinned toolchain's own SDK-compatible runtimes for pin verification.
+A newest-runtime-only check does not detect deletion of older pinned runtimes.
+Repeat retention checks after successful host refresh, guest maintenance and approved guest/host restarts.
+Check both the runner environment and global selection, and preserve the original registrations.
+
+Mocked tests must cover alternative/mixed policy keys, exact pins, duplicates, missing/ambiguous versions, explicit defaults, optional betas, and host-to-guest catalog resolution.
+Verify that incomplete pinned preparation prevents selection and cleanup, and that repeated maintenance and a newer rolling release preserve all required runtime families.
+Removing a pin must leave the remaining policy intact.
+For external Xcode installations, report application survival and runtime survival separately.
+
+The [validation workflow](hosts.md#validate-the-runners) requires a clean signed deployed revision matching the dispatched revision and an available workflow on the default branch.
+Its job-specific toolchain selection does not change global selection.
+Report mocked results, direct guest smoke tests, and real dispatched jobs independently.
+Do not describe a proposed or locally modified deployment as the final signed source.

@@ -41,15 +41,17 @@ See [interactive preparation and automatic provisioning](docs/prepare.md) for th
 The foreground `install host` command remains available for compatibility; keep its terminal open until it finishes.
 See the [setup guide](docs/setup.md) for prerequisites, token scopes, unattended operation and the steps that still require a person.
 The [host reference](docs/hosts.md) documents individual VM commands and resource choices.
+For existing installations, the [macOS update runbook](docs/macos-updates.md) covers parallel guest updates over SSH, safe host preparation, explicit restart approval and recovery checks.
 
 ## What gets installed
 
 - **GitHub Actions runner**: latest release, registered to your repo/org, running as a per-user launchd service, kept up to date.
 - **Toolchain** (Homebrew): openjdk (java), firebase-cli, fastlane, node, xcbeautify, git-lfs, aria2, xcodes, jq, python3, swiftlint, periphery — plus xcpretty (Ruby user gem; it has no Homebrew formula).
-- **Xcode**: only the newest release or Release Candidate, with all platform SDKs, simulator runtimes and (Xcode 26+) the Metal toolchain.
+- **Xcode**: Xcode 26.6 alongside the newest release or Release Candidate in the supplied configuration, with all configured platform SDKs, simulator runtimes and (Xcode 26+) the Metal toolchain.
   Newer betas are opt-in.
-- **Job environment**: CI jobs automatically get Homebrew on `PATH`, `JAVA_HOME`/`LANG`/`LC_ALL`, and the latest release or RC of Xcode via `DEVELOPER_DIR` — configured through the runner's `.env`/`.path` files (the runner's own mechanism for injecting env/PATH into every job).
-  The global `xcode-select` also tracks the latest release or RC of Xcode, and Apple's WWDR intermediate certificate is installed for code signing.
+  See [multiple Xcode versions](docs/xcode-versions.md) for pin-only policies and a separately configured default.
+- **Job environment**: CI jobs automatically get Homebrew on `PATH`, `JAVA_HOME`/`LANG`/`LC_ALL`, and the configured default Xcode via `DEVELOPER_DIR` — configured through the runner's `.env`/`.path` files (the runner's own mechanism for injecting env/PATH into every job).
+  The global `xcode-select` uses the same configured default, and Apple's WWDR intermediate certificate is installed for code signing.
 - **Maintenance**: per-user LaunchAgents run at login and every six hours.
   Runner maintenance defers active jobs.
   VM hosts download Xcode and distribute it to their guests; physical runners download it locally.
@@ -107,7 +109,7 @@ On a VM host, use the [host commands](docs/hosts.md#configure-each-runner) inste
 |---|---|
 | Homebrew packages | refreshes metadata, installs/upgrades each managed package independently; reports outdated pinned formulae without changing the pins |
 | Passwordless xcode-select | sudoers rule (`/etc/sudoers.d/xcode`) installed on the first interactive run: `sudo xcode-select -s` and `sudo xcodebuild -runFirstLaunch` work without a password — for CI jobs and for unattended converges finishing a new Xcode's first-launch setup |
-| Xcode releases | installs the newest release or RC and requested components; selects it only after successful preparation; retains the Xcode still referenced by the runner environment until a later pass |
+| Xcode releases | installs every pinned/tracked release and requested components; selects the configured default only after successful preparation; retains the Xcode still referenced by the runner environment until a later pass |
 | Runner software | updates when a newer release exists (checksum-verified); the runner also self-updates between runs |
 | Registration | re-registers only when `config.toml` changed (name/labels/URL/group/work dir); otherwise untouched |
 | Job env (`.env`/`.path`) | rewritten only on change; a persisted restart marker survives an interrupted update |
@@ -310,7 +312,9 @@ jobs:
 ```
 
 Jobs needing a specific Xcode can set `DEVELOPER_DIR` to the path of an installed Xcode.
-The default policy keeps only the latest release or RC; it does not preserve arbitrary older versions.
+Keep that version in `xcode.pinned_versions` so maintenance retains its application and required simulator runtimes.
+The supplied policy pins 26.6 and tracks the newest release or RC as the default.
+Review [OS compatibility and per-toolchain validation](docs/xcode-versions.md) before deployment.
 
 ## Credentials and job access
 

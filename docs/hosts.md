@@ -143,6 +143,9 @@ These settings are not enforced by a recurring privileged service; rerun the rea
 Host SSH and Screen Sharing are optional administration choices and are not enabled by setup.
 Never run physical-runner setup on the host to obtain these host settings.
 
+For existing machines, follow the [macOS update runbook](macos-updates.md) for job draining, concurrent guest updates over SSH, host download/installation/restart boundaries, and post-reboot checks.
+That procedure updates the installed operating systems without repinning the saved restore image or recreating the owned VMs.
+
 ## Names and resources
 
 Set the destination in `config.toml` first.
@@ -349,8 +352,10 @@ Archive-staging failures happen before guest maintenance and cannot be diagnosed
 Guest maintenance acquires its existing lock and defers active runner jobs.
 Sleeping, logged-out, and powered-off hosts cannot run this login agent.
 For initial provisioning, `host configure --vm "GitHub Runner 1"` limits work to one guest.
-Only the newest release or Release Candidate is kept by default, with all platforms, simulator runtimes, and Metal tools.
-Older managed Xcodes are removed after the replacement passes readiness checks.
+The supplied configuration retains Xcode 26.6 alongside the newest release or Release Candidate, with configured platforms, simulator runtimes, and Metal tools for each.
+Use the shared [Xcode retention policy](xcode-versions.md) to retain exact pins alongside the latest, use only pinned versions, or choose a different default.
+The host caches all selected archives, and guest cleanup preserves every retained toolchain and its required runtimes.
+Managed Xcodes outside the retained set are eligible for cleanup only after every requested toolchain passes readiness checks.
 Beta installation is disabled by default.
 See the [Xcodes authentication instructions](https://github.com/XcodesOrg/xcodes#usage).
 Guests created without automatic provisioning can follow the [dedicated runner instructions](setup.md#choose-one-layout) inside the guest.
@@ -362,8 +367,14 @@ After setup, check `./setup status` inside both guests and their online state in
 Restart each guest and verify automatic login and runner recovery.
 Follow the [completion checklist](setup.md#completion-checklist), including the installed refresh agent and real GitHub jobs, before declaring the host fully validated.
 Measure host memory pressure, compression and swap during representative concurrent workloads; a short smoke test is not a guarantee that a fixed reserve prevents pressure under all builds.
-The included `Runner validation` workflow accepts both runner names, tests a Swift package, compiles and executes a Metal shader with checked results, and boots one temporary simulator for each of iOS, tvOS, watchOS and visionOS.
-It must be published before GitHub can dispatch it; local VM checks do not substitute for a successful workflow run.
+The included `Runner validation` workflow accepts both runner names and runs a matrix of each runner with the default Xcode and the 26.6 pin.
+Each job verifies that the deployed checkout is clean, signed and matches the dispatched revision, then sets only its job's `DEVELOPER_DIR` after checking the installed toolchain's exact version/build.
+It tests a Swift package, compiles and executes a Metal shader with checked results, and boots a temporary SDK-compatible simulator for each of iOS, tvOS, watchOS and visionOS.
+It records the exact source, macOS, Xcode and runtime versions/builds in the job summary.
+Two jobs targeting the same runner execute sequentially; jobs on different runners can run concurrently.
+The workflow must exist on the default branch before [manual dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), even when selecting another branch for the run.
+Arrange any required minimal workflow publication or use an existing approved validation repository separately; do not merge unvalidated provisioning changes just to enable dispatch.
+Local VM checks do not substitute for a successful workflow run.
 The cleanup probe invokes the configured completed hook on disposable job fixtures, including hidden files, interrupted-job leftovers, control files and a symlink to a newly created outside sentinel.
 Run it on the owned validation runners: the hook cleans their job workspace and resets simulators; the probe retains its outside sentinel for inspection.
 Invalid paths, setup-lock contention and an injected short deadline must fail before deleting the fixtures.

@@ -55,6 +55,7 @@ Its executable, configuration and interpreter binding are checked before use.
 When reviewed source or Python changes require rebuilding it, the previous generated bundle is retained and macOS may request consent again.
 
 After **Background provisioning started**, the preparation Terminal can be closed.
+This applies to the launchd provisioning handoff; closing a foreground OS updater has a different lifecycle, covered in the [macOS update runbook](macos-updates.md#when-terminal-blocks-the-host-restart).
 Keep the host awake and logged in.
 A screen lock is different from logout or sleep; cold boot still requires manual FileVault unlock and host login.
 

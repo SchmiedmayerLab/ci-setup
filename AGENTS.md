@@ -9,6 +9,7 @@ SPDX-License-Identifier: MIT
 
 Read [the maintenance guide](docs/maintenance.md) and the relevant setup guide before editing.
 For a new VM host, also read [interactive preparation and background provisioning](docs/prepare.md).
+For toolchain policy or OS-update work, read [Xcode retention](docs/xcode-versions.md) and the [macOS update runbook](docs/macos-updates.md).
 These instructions apply to automated contributors and people using scripting tools.
 
 Keep each Markdown prose sentence on one source line, with line breaks between sentences.
@@ -32,6 +33,10 @@ Preserve the required README sections and footers, and use the shared standards 
 - Preserve active jobs.
   Runner mutations belong inside the existing per-user lock and maintenance guard.
   Keep host orchestration out of runner maintenance.
+  OS-update scheduling protection must survive reboot; the in-process maintenance guard is not a persistent drain.
+- Keep the shared Xcode policy consistent on the host and guests.
+  Retain the configured pins as well as the newest eligible release/RC, prepare all retained toolchains before cleanup, and validate each against its own SDK-compatible runtimes.
+  Record exact toolchain/runtime builds and check retention again after maintenance and approved restarts.
 - Keep passwords, PATs, Apple credentials, authentication URLs and private terminal output out of source, logs, tests, command arguments and review drafts.
   Test with fake values.
   Read only the diagnostic fields needed to understand a failure.
@@ -44,6 +49,7 @@ Preserve the required README sections and footers, and use the shared standards 
   Never disable signing to make a test pass.
   Verify created signatures.
 - Prepare changes and review text locally.
+  Prefer signed follow-up commits and normal pushes on the existing PR branch; avoid rewriting published history unless explicitly instructed after reviewing the impact and recovery options.
   Do not push, publish or communicate on GitHub without explicit approval of the concrete action and content.
 - Report what was tested, what was mocked and what still needs real-machine validation.
   Never treat successful prerequisite checks as a completed install.
