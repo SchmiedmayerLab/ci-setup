@@ -37,6 +37,9 @@ Preserve the required README sections and footers, and use the shared standards 
 - Keep the shared Xcode policy consistent on the host and guests.
   Retain the configured pins as well as the newest eligible release/RC, prepare all retained toolchains before cleanup, and validate each against its own SDK-compatible runtimes.
   Record exact toolchain/runtime builds and check retention again after maintenance and approved restarts.
+  Xcode 26.6 installed on macOS 27 for command-line CI, including `xcodebuild`, is an accepted project configuration; the Xcode GUI is outside this use case.
+  Do not repeatedly question this pairing or request compatibility approval solely because Apple's published OS range excludes macOS 27.
+  Continue normal CLI verification and report a new concrete failure, a requirement to use the GUI, or a change outside this accepted scope.
 - Keep passwords, PATs, Apple credentials, authentication URLs and private terminal output out of source, logs, tests, command arguments and review drafts.
   Test with fake values.
   Read only the diagnostic fields needed to understand a failure.

@@ -557,6 +557,60 @@ class XcodeReadinessTests(unittest.TestCase):
             xcode._unattended_first_launch(self.app / 'Contents/Developer')
 
 
+class GlobalSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.previous = '/fake/Previous.app/Contents/Developer'
+        self.target = pathlib.Path('/fake/Target.app/Contents/Developer')
+        self.global_dir = self.previous
+        self.first_launch = subprocess.CompletedProcess([], 0)
+        self.first_launch_directory = None
+        self.run = mock.patch.object(xcode, 'run', side_effect=self.command)
+        self.calls = self.run.start()
+        self.addCleanup(self.run.stop)
+
+    def command(self, command, **kwargs):
+        if command == ['/usr/bin/env', '-u', 'DEVELOPER_DIR', '/usr/bin/xcode-select', '-p']:
+            return subprocess.CompletedProcess(command, 0, self.global_dir + '\n', '')
+        if command == ['/usr/bin/xcode-select', '-p']:
+            return subprocess.CompletedProcess(command, 0, xcode.os.environ.get('DEVELOPER_DIR', self.global_dir), '')
+        if command[:4] == ['sudo', '-n', '/usr/bin/xcode-select', '-s']:
+            self.global_dir = command[4]
+            return subprocess.CompletedProcess(command, 0)
+        if command == ['sudo', '-n', '/usr/bin/xcodebuild', '-runFirstLaunch']:
+            self.first_launch_directory = self.global_dir
+            if isinstance(self.first_launch, Exception):
+                raise self.first_launch
+            return self.first_launch
+        self.fail(f'Unexpected command: {command}')
+
+    def test_runner_override_cannot_hide_required_global_switch(self):
+        with mock.patch.dict(xcode.os.environ, {'DEVELOPER_DIR': str(self.target)}):
+            xcode._ensure_global_selection(self.target)
+            self.assertEqual(xcode.os.environ['DEVELOPER_DIR'], str(self.target))
+        self.assertEqual(self.global_dir, str(self.target))
+
+    def test_other_override_does_not_trigger_an_unnecessary_global_switch(self):
+        self.global_dir = str(self.target)
+        with mock.patch.dict(xcode.os.environ, {'DEVELOPER_DIR': self.previous}):
+            xcode._ensure_global_selection(self.target)
+        self.assertEqual(self.calls.call_count, 1)
+
+    def test_first_launch_restores_actual_global_selection_despite_override(self):
+        for result in (subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 1),
+                       SetupError('first launch timed out')):
+            with self.subTest(result=result), mock.patch.dict(xcode.os.environ, {'DEVELOPER_DIR': str(self.target)}):
+                self.global_dir = self.previous
+                self.first_launch = result
+                if isinstance(result, Exception):
+                    with self.assertRaisesRegex(SetupError, 'timed out'):
+                        xcode._unattended_first_launch(self.target)
+                else:
+                    self.assertEqual(xcode._unattended_first_launch(self.target), result.returncode == 0)
+                self.assertEqual(self.first_launch_directory, str(self.target))
+                self.assertEqual(self.global_dir, self.previous)
+                self.assertEqual(xcode.os.environ['DEVELOPER_DIR'], str(self.target))
+
+
 class RuntimeCleanupTests(unittest.TestCase):
     def test_pinned_runtime_survives_repeated_cleanup_and_rolling_upgrade(self):
         catalog = '26.6 (PIN)\n27.2 Release Candidate (RC)\n'

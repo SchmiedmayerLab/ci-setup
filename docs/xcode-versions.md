@@ -26,12 +26,12 @@ install_beta = false
 platforms = ["all"]
 ```
 
-This example expresses a retention policy, not a promise of OS compatibility.
-Check Apple's [Xcode system requirements](https://developer.apple.com/xcode/system-requirements/) before enabling a pin on a machine.
-Apple lists Xcode 26.6 for macOS 26.2–26.x.
-CLI checks have succeeded on macOS 27.2 test guests, but this is empirical evidence outside that documented range; GUI compatibility was not validated.
-Retention support does not bypass Apple's platform restrictions or make an unsupported pairing supported.
-Reassess compatibility before OS updates or choosing a new guest image; a floating Xcode release may also increase its minimum OS requirement.
+**Xcode 26.6 can be installed on macOS 27 for command-line CI, including `xcodebuild`; using the Xcode GUI is outside this setup's scope.**
+This is an accepted project configuration, with successful CLI checks reported on macOS 27.2 guests.
+Apple's [published system requirements](https://developer.apple.com/xcode/system-requirements/) list macOS 26.2–26.x for Xcode 26.6; the accepted CLI deployment does not claim official support or GUI compatibility on macOS 27.
+Do not treat that known OS-range mismatch alone as a deployment blocker or repeatedly request compatibility approval for this pairing.
+Continue verifying the actual toolchain build, CLI commands and required runtimes; raise a new concrete failure, a need for GUI use, or a change outside the accepted macOS 27 CLI scope.
+For other Xcode/OS combinations, review compatibility before choosing a pin or guest image; a floating Xcode release may increase its minimum OS requirement.
 
 Every retained Xcode receives the configured platform SDKs, simulator runtimes, first-launch preparation and Metal tools through the existing maintenance path.
 `platforms = ["all"]` requests the platforms available to each retained Xcode; it does not install every historical simulator release from Apple's catalog.
@@ -130,7 +130,20 @@ Discovery and effective job selection are separate checks.
 Our runners supply their configured default through `DEVELOPER_DIR`, which overrides the system-wide selection.
 The action's [v1 selection implementation](https://github.com/maxim-lobanov/setup-xcode/blob/v1/src/xcode-selector.ts) changes global `xcode-select` but does not replace that environment variable.
 An action can report that it selected 26.6 while subsequent build commands still use the runner's default.
-If using the action, explicitly set `DEVELOPER_DIR` for subsequent build steps to its `path` output plus `/Contents/Developer`, and verify the effective version/build before building.
+If using the action, explicitly set `DEVELOPER_DIR` for subsequent build steps to its `path` output plus `/Contents/Developer`.
+Alternatively, use its exported `MD_APPLE_SDK_ROOT` in a separate step after the action:
+
+```yaml
+- name: Use the action-selected Xcode for subsequent steps
+  shell: bash
+  run: |
+    developer_dir="${MD_APPLE_SDK_ROOT:?setup-xcode must run first}/Contents/Developer"
+    test -d "$developer_dir"
+    printf 'DEVELOPER_DIR=%s\n' "$developer_dir" >> "$GITHUB_ENV"
+```
+
+`GITHUB_ENV` applies to subsequent steps; verify `xcodebuild -version` and the required build there before compiling.
+The [inspected action revision](https://github.com/maxim-lobanov/setup-xcode/blob/ed7a3b1fda3918c0306d1b724322adc0b8cc0a90/src/setup-xcode.ts) supports the `path` output; `MD_APPLE_SDK_ROOT` is an alternative, not a required migration.
 Account for the action's global selection change separately; the repository's validation workflow uses only job-specific selection.
 
 For a known installed path, a job can select the pin directly without changing global selection:

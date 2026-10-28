@@ -216,6 +216,7 @@ Closing a laptop lid can still suspend it.
 4. Download and verify the image, save its pin, install the guests and create their accounts.
    Install the Xcode versions selected by the [retention policy](xcode-versions.md), configured simulator platforms and Metal tools, then register runners and load services.
    The supplied configuration retains 26.6 alongside the newest release or Release Candidate, which remains the default.
+   Xcode 26.6 may be installed on macOS 27 for CLI use such as `xcodebuild`; this accepted pairing does not require the Xcode GUI to work.
    The host downloads Xcode once and transfers verified archives to its guests.
 
 After the initial inputs, commands run without terminal prompts.

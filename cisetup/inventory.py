@@ -108,7 +108,7 @@ def _xcodes(cfg: Config) -> dict:
                              "prerelease": list(parsed[1]), "build": entry.build})
         releases.sort(key=lambda item: json.dumps(item, sort_keys=True))
 
-    selected_path = output(["/usr/bin/xcode-select", "-p"], check=cfg.xcode_manage)
+    selected_path = output(xcode.GLOBAL_SELECTION_COMMAND, check=cfg.xcode_manage)
     selected = None
     if selected_path:
         try:

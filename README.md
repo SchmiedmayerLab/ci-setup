@@ -314,7 +314,8 @@ jobs:
 Jobs needing a specific Xcode can set `DEVELOPER_DIR` to the path of an installed Xcode.
 Keep that version in `xcode.pinned_versions` so maintenance retains its application and required simulator runtimes.
 The supplied policy pins 26.6 and tracks the newest release or RC as the default.
-Review [OS compatibility and per-toolchain validation](docs/xcode-versions.md) before deployment.
+Xcode 26.6 on macOS 27 is an accepted configuration for `xcodebuild` and other CLI use; the Xcode GUI is outside this use case.
+Follow the [per-toolchain validation and compatibility guidance](docs/xcode-versions.md), including the recorded scope of this accepted pairing.
 
 ## Credentials and job access
 

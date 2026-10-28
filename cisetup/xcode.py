@@ -23,6 +23,9 @@ from . import util
 from .config import Config
 from .util import SetupError, log, ok, output, run, warn
 
+# A runner/job override must not mask the machine-wide selection.
+GLOBAL_SELECTION_COMMAND = ['/usr/bin/env', '-u', 'DEVELOPER_DIR', '/usr/bin/xcode-select', '-p']
+
 # Matches `xcodes list` lines. xcodes 2.0.1+ appends a bracketed architecture
 # label after the build; 1.x has none. Annotations like "(Installed, Selected)"
 # may follow. Examples:
@@ -257,7 +260,7 @@ def _unattended_first_launch(developer_dir: Path) -> bool:
     Xcode selected, even when xcodebuild itself fails to start.
     """
     previous_result = run(
-        ["/usr/bin/xcode-select", "-p"], check=False, capture=True
+        GLOBAL_SELECTION_COMMAND, check=False, capture=True
     )
     previous = previous_result.stdout.strip()
     if previous_result.returncode != 0 or not previous:
@@ -656,7 +659,7 @@ def _ensure_global_selection(developer_dir: Path) -> None:
     don't depend on this (they pin DEVELOPER_DIR via the runner's .env), but
     it keeps SSH sessions and anything else on the machine consistent.
     Passwordless via the sudoers rule; `sudo -n` never prompts."""
-    current = run(["/usr/bin/xcode-select", "-p"], check=False, capture=True).stdout.strip()
+    current = run(GLOBAL_SELECTION_COMMAND, check=False, capture=True).stdout.strip()
     if current == str(developer_dir):
         ok(f"xcode-select points at {developer_dir}")
         return

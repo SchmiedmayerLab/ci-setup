@@ -79,6 +79,19 @@ class ToolchainSelectionTests(unittest.TestCase):
             validation.select_xcode('26.6')
         self.assertEqual(output.call_count, 1)
 
+    def test_runner_override_cannot_mask_a_different_global_selection(self):
+        def selected(command, **kwargs):
+            if command == ['/usr/bin/env', '-u', 'DEVELOPER_DIR', '/usr/bin/xcode-select', '-p']:
+                return '/fake/Other.app/Contents/Developer'
+            if command == ['/usr/bin/xcode-select', '-p']:
+                return os.environ['DEVELOPER_DIR']
+            self.fail('Selection mismatch must stop before discovery or environment export')
+
+        with patch.dict(os.environ, {'DEVELOPER_DIR': self.default}), \
+                patch.object(validation, 'output', side_effect=selected), \
+                self.assertRaisesRegex(SetupError, 'must agree'):
+            validation.select_xcode('26.6')
+
 
 class SimulatorValidationTests(unittest.TestCase):
     def setUp(self):

@@ -53,7 +53,7 @@ def record(message):
 
 def select_xcode(selector):
     runner_default = os.environ.get('DEVELOPER_DIR', '')
-    global_default = output(['/usr/bin/xcode-select', '-p'], timeout=30)
+    global_default = output(xcode.GLOBAL_SELECTION_COMMAND, timeout=30)
     if not runner_default or Path(runner_default).resolve() != Path(global_default).resolve():
         raise SetupError('Runner DEVELOPER_DIR and global Xcode selection must agree before validation')
     installed = xcode.parse_installed(output(['xcodes', 'installed'], timeout=60))

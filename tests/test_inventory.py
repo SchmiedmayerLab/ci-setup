@@ -10,6 +10,7 @@
 
 import copy
 import json
+import os
 import pathlib
 import plistlib
 import stat
@@ -75,6 +76,8 @@ class InventoryTests(unittest.TestCase):
             plistlib.dump({"ProductBuildVersion": build}, file)
 
     def command(self, cmd, **kwargs):
+        if cmd == ["/usr/bin/xcode-select", "-p"]:
+            return os.environ.get("DEVELOPER_DIR", self.selected)
         if cmd == ["git", "-C", str(self.root), "rev-parse", "HEAD"]:
             return "510bb07302eddec5a28932ff51b2f588ad473206"
         if cmd == ["git", "-C", str(self.root), "status", "--porcelain"]:
@@ -87,7 +90,7 @@ class InventoryTests(unittest.TestCase):
             ("/usr/bin/sw_vers", "-productVersion"): "27.0",
             ("/usr/bin/sw_vers", "-buildVersion"): "26A428",
             ("xcodes", "installed"): self.installed,
-            ("/usr/bin/xcode-select", "-p"): self.selected,
+            ("/usr/bin/env", "-u", "DEVELOPER_DIR", "/usr/bin/xcode-select", "-p"): self.selected,
         }
         if tuple(cmd) not in responses:
             raise AssertionError(f"unexpected command: {cmd}")
@@ -141,6 +144,20 @@ class InventoryTests(unittest.TestCase):
         self.assertTrue(any("xcodes.runner.version" in item for item in changes))
         self.assertTrue(any("xcodes.runner.build" in item for item in changes))
         self.assertNotIn("never-copy-this-secret", json.dumps(second))
+
+    def test_process_override_does_not_hide_global_and_runner_differences(self):
+        other = self.root / "Global-Xcode.app"
+        (other / "Contents/Developer").mkdir(parents=True)
+        self.write_plists(other, version="26.5", build="17E1")
+        self.selected = str(other / "Contents/Developer")
+        with mock.patch.dict(os.environ, {"DEVELOPER_DIR": str(self.app / "Contents/Developer")}):
+            snapshot = inventory.collect(self.cfg)
+        self.assertEqual(snapshot["errors"], [])
+        tools = snapshot["comparable"]["xcodes"]
+        self.assertEqual(tools["selected"], {"version": "26.5", "build": "17E1"})
+        self.assertEqual(tools["runner"], {
+            "version": "26.6", "build": "17F42", "source": "DEVELOPER_DIR",
+        })
 
     def test_disabled_xcode_management_allows_intentionally_absent_xcodes(self):
         self.cfg.xcode_manage = False

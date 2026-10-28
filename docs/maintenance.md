@@ -167,6 +167,8 @@ Removing a pin must leave the remaining policy intact.
 For external Xcode installations, report application survival and runtime survival separately.
 Also verify [bundle location and workflow discovery](xcode-versions.md#application-location-and-workflow-discovery): a CLI-usable external bundle or symlink can remain invisible to `setup-xcode`.
 Test the effective build toolchain with the runner's normal `DEVELOPER_DIR`; action discovery and global selection alone do not establish which Xcode a job uses.
+Global-selection probes must ignore the inherited `DEVELOPER_DIR` without clearing the job's own override.
+Regressions cover correcting a masked global mismatch, restoring the actual prior selection after first launch fails or times out, and reporting global and runner selections independently.
 
 The [validation workflow](hosts.md#validate-the-runners) requires a clean signed deployed revision matching the dispatched revision and an available workflow on the default branch.
 Its job-specific toolchain selection does not change global selection.
