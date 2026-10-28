@@ -118,6 +118,65 @@ Host archive pruning and shared simulator-download caching are not implemented b
 Use a maintenance window with sufficient disk space for all selected apps, host/guest archives, runtimes and temporary extraction files.
 Retaining another full Xcode increases download, disk and maintenance costs; the existing minimum-free-space checks do not constitute a complete capacity estimate.
 
+## Application location and workflow discovery
+
+Keep managed Xcodes as real `Xcode*.app` directories directly inside `/Applications` when workflows use `maxim-lobanov/setup-xcode`.
+The action's [v1 discovery implementation](https://github.com/maxim-lobanov/setup-xcode/blob/v1/src/xcode-utils.ts) excludes symbolic links and does not search external directories such as `~/Xcodes`.
+A symlink in `/Applications` pointing to an external bundle does not make that bundle discoverable.
+The normal installer uses `xcodes`' default `/Applications` destination; inspect any `XCODES_DIRECTORY` override or earlier manual `--directory` installation before assuming that layout.
+This guidance does not automatically move existing applications.
+
+Discovery and effective job selection are separate checks.
+Our runners supply their configured default through `DEVELOPER_DIR`, which overrides the system-wide selection.
+The action's [v1 selection implementation](https://github.com/maxim-lobanov/setup-xcode/blob/v1/src/xcode-selector.ts) changes global `xcode-select` but does not replace that environment variable.
+An action can report that it selected 26.6 while subsequent build commands still use the runner's default.
+If using the action, explicitly set `DEVELOPER_DIR` for subsequent build steps to its `path` output plus `/Contents/Developer`, and verify the effective version/build before building.
+Account for the action's global selection change separately; the repository's validation workflow uses only job-specific selection.
+
+For a known installed path, a job can select the pin directly without changing global selection:
+
+```yaml
+jobs:
+  build:
+    runs-on: [self-hosted, macOS, ARM64]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode-26.6.0.app/Contents/Developer
+    steps:
+      - name: Inspect the selected toolchain
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun --find swift
+          xcrun swift --version
+      # Add the checkout and build steps for this project.
+```
+
+Use the runner's actual verified path rather than assuming this example's filename.
+Compare the reported version/build with the required pin; printing the version alone is not an assertion that the requested toolchain was used.
+To inspect the global selection independently of the job override, use `env -u DEVELOPER_DIR /usr/bin/xcode-select -p`.
+
+## Migrate an externally installed bundle
+
+Treat relocation as a reviewed maintenance operation on the affected runner, not a normal convergence step.
+
+1. Record the source path, real bundle version/build, current global selection, runner environment and any consumers of the old path.
+   Inspect custom `XCODES_DIRECTORY` settings and existing destinations; do not assume the username or paths from another machine.
+2. Ensure the shared retention policy and supporting source are deployed on the host and runner before returning the relocated pin to maintenance.
+   An older single-version policy can remove the newly visible bundle and its runtimes.
+3. Prevent new jobs, let active jobs finish, and use the existing setup lock and maintenance guard for the operation.
+   Coordinate host refresh and guest schedules so they cannot race the relocation.
+4. Move the verified real bundle into its intended `/Applications/Xcode*.app` path only when that destination is absent.
+   If any destination entry already exists, including a symlink, stop for comparison and reconciliation; do not overwrite it or nest one application inside another.
+5. If existing explicit-path consumers need compatibility, retain a symlink at the old path pointing to the real bundle in `/Applications`.
+   Otherwise update those consumers and any affected runner/global selection through the reviewed configuration procedure before restoring service.
+   Preserve unrelated applications, registrations, security controls and runtime data.
+6. Verify the new real directory and version/build, managed inventory, and discovery/selection by the workflow's actual `setup-xcode` revision where used.
+   Check effective `xcodebuild`/Swift selection with the runner's normal environment, plus the required simulator runtimes.
+   After normal maintenance and an approved restart, confirm location, retention, defaults and service recovery before declaring migration complete.
+
+A successful local action invocation or restart check does not establish that the affected GitHub workflow has passed.
+Record the real workflow run separately, including the action revision, source revision, selected Xcode build and runtime results.
+
 ## Verify the result
 
 On each runner, inspect the installed apps and the inventory:

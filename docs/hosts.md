@@ -371,6 +371,8 @@ The included `Runner validation` workflow accepts both runner names and runs a m
 Each job verifies that the deployed checkout is clean, signed and matches the dispatched revision, then sets only its job's `DEVELOPER_DIR` after checking the installed toolchain's exact version/build.
 It tests a Swift package, compiles and executes a Metal shader with checked results, and boots a temporary SDK-compatible simulator for each of iOS, tvOS, watchOS and visionOS.
 It records the exact source, macOS, Xcode and runtime versions/builds in the job summary.
+This validates direct toolchain use, not discovery by a third-party selection action.
+For projects using `maxim-lobanov/setup-xcode`, also verify [application location and effective job selection](xcode-versions.md#application-location-and-workflow-discovery) through that project's actual workflow.
 Two jobs targeting the same runner execute sequentially; jobs on different runners can run concurrently.
 The workflow must exist on the default branch before [manual dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), even when selecting another branch for the run.
 Arrange any required minimal workflow publication or use an existing approved validation repository separately; do not merge unvalidated provisioning changes just to enable dispatch.
