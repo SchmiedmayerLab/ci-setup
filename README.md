@@ -24,8 +24,10 @@ A LaunchAgent checks for updates at login and every six hours.
   xcbeautify, git-lfs, aria2, xcodes, jq, python3, swiftlint, periphery —
   plus xcpretty (Ruby user gem; it has no Homebrew formula).
 - **Xcode**: the newest stable release, the newest release of the previous
-  minor train, and (if newer than stable) the newest beta/RC — each with
-  simulator runtimes, SDKs and (Xcode 26+) the Metal toolchain.
+  minor train, the newest release of the previous major version, and (if
+  newer than stable) the newest beta/RC — each with simulator runtimes, SDKs
+  and (Xcode 26+) the Metal toolchain. For example, with 27.1 as the newest
+  stable and 27.2 in beta: 27.1, 27.0, 26.6 and the newest 27.2 beta/RC.
 - **Job environment**: CI jobs automatically get Homebrew on `PATH`,
   `JAVA_HOME`/`LANG`/`LC_ALL`, and the latest stable Xcode via
   `DEVELOPER_DIR` — configured through the runner's `.env`/`.path` files
@@ -146,7 +148,7 @@ skips whatever is already correct:
 |---|---|
 | Homebrew packages | refreshes metadata, installs/upgrades each managed package independently; reports outdated pinned formulae without changing the pins |
 | Passwordless xcode-select | sudoers rule (`/etc/sudoers.d/xcode`) installed on the first interactive run: `sudo xcode-select -s` and `sudo xcodebuild -runFirstLaunch` work without a password — for CI jobs and for unattended converges finishing a new Xcode's first-launch setup |
-| Xcode releases | installs stable/previous/beta versions and requested components; only selects a ready stable release and cleans up after successful preparation; retains the Xcode still referenced by the runner environment until a later pass |
+| Xcode releases | installs stable/previous-minor/previous-major/beta versions and requested components; only selects a ready stable release and cleans up after successful preparation; retains the Xcode still referenced by the runner environment until a later pass |
 | Runner software | updates when a newer release exists (checksum-verified); the runner also self-updates between runs |
 | Registration | re-registers only when `config.toml` changed (name/labels/URL/group/work dir); otherwise untouched |
 | Job env (`.env`/`.path`) | rewritten only on change; a persisted restart marker survives an interrupted update |

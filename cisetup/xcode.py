@@ -7,8 +7,9 @@
 #
 
 """Xcode releases via `xcodes`: keep the latest stable release, the previous
-minor release, and (optionally) the newest beta/RC installed — including
-simulator runtimes, SDKs and the Metal toolchain for each of them."""
+minor release, the latest release of the previous major version, and
+(optionally) the newest beta/RC installed — including simulator runtimes, SDKs
+and the Metal toolchain for each of them."""
 
 from __future__ import annotations
 
@@ -160,15 +161,23 @@ def select_desired(
     releases: list[Release], install_beta: bool
 ) -> tuple[list[Release], Release]:
     """Pick (desired releases, latest stable): the newest stable release, the
-    newest release of the previous minor train, and — when it is newer than
-    the newest stable — the newest beta/RC."""
+    newest release of the previous minor train, the newest release of the
+    previous major version, and — when it is newer than the newest stable —
+    the newest beta/RC."""
     stables = [r for r in releases if not r.prerelease]
     if not stables:
         raise SetupError("could not parse any stable Xcode releases from `xcodes list`")
     latest = max(stables, key=Release.sort_key)
     latest_train = latest.version[:2]
-    previous_pool = [r for r in stables if r.version[:2] != latest_train]
-    previous = max(previous_pool, key=Release.sort_key) if previous_pool else None
+    previous_minor_pool = [r for r in stables if r.version[:2] != latest_train]
+    previous_minor = (
+        max(previous_minor_pool, key=Release.sort_key) if previous_minor_pool else None
+    )
+    # Any lower major counts: Apple skipped from Xcode 16 straight to 26.
+    previous_major_pool = [r for r in stables if r.version[0] < latest.version[0]]
+    previous_major = (
+        max(previous_major_pool, key=Release.sort_key) if previous_major_pool else None
+    )
     beta = None
     if install_beta:
         newer_prereleases = [
@@ -176,7 +185,12 @@ def select_desired(
         ]
         if newer_prereleases:
             beta = max(newer_prereleases, key=Release.sort_key)
-    desired = [r for r in (latest, previous, beta) if r is not None]
+    desired = []
+    # Right after a major release (e.g. x.0), the previous minor train and
+    # the previous major version are the same release.
+    for release in (latest, previous_minor, previous_major, beta):
+        if release is not None and release not in desired:
+            desired.append(release)
     return desired, latest
 
 
