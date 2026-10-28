@@ -97,7 +97,7 @@ class SelectDesiredTests(unittest.TestCase):
 
     def test_beta_ahead_of_stable(self):
         desired, latest = self._ids(LISTING_BETA_AHEAD)
-        self.assertEqual(desired, ["16.4", "16.3", "26.0 Beta 5"])
+        self.assertEqual(desired, ["16.4", "16.3", "12.5.1", "26.0 Beta 5"])
         self.assertEqual(latest, "16.4")
 
     def test_beta_not_newer_than_stable_is_dropped(self):
@@ -107,7 +107,7 @@ class SelectDesiredTests(unittest.TestCase):
 
     def test_install_beta_false(self):
         desired, _ = self._ids(LISTING_BETA_AHEAD, install_beta=False)
-        self.assertEqual(desired, ["16.4", "16.3"])
+        self.assertEqual(desired, ["16.4", "16.3", "12.5.1"])
 
     def test_patch_releases_group_into_minor_trains(self):
         listing = "16.3 (16E140)\n16.4 (16F6)\n16.4.1 (16F8)\n"
@@ -130,6 +130,31 @@ class SelectDesiredTests(unittest.TestCase):
         desired, latest = self._ids(listing)
         self.assertEqual(desired, ["26.0", "16.4", "26.1 Release Candidate"])
         self.assertEqual(latest, "26.0")
+
+    def test_previous_major_alongside_previous_minor(self):
+        listing = (
+            "26.5 (17F42)\n"
+            "26.6 Release Candidate (17F109)\n"
+            "26.6 (17F113)\n"
+            "27.0 Beta 6 (27A5252f)\n"
+            "27.0 (27A266a)\n"
+            "27.1 (27A9275)\n"
+            "27.2 Beta 3 (27B5038j)\n"
+            "27.2 Release Candidate (27B48)\n"
+        )
+        desired, latest = self._ids(listing)
+        self.assertEqual(desired, ["27.1", "27.0", "26.6", "27.2 Release Candidate"])
+        self.assertEqual(latest, "27.1")
+
+    def test_previous_major_prefers_its_newest_patch_release(self):
+        listing = "26.6 (17F113)\n26.6.1 (17F120)\n27.0 (27A266a)\n27.1 (27A9275)\n"
+        desired, _ = self._ids(listing, install_beta=False)
+        self.assertEqual(desired, ["27.1", "27.0", "26.6.1"])
+
+    def test_previous_major_skips_unreleased_major_numbers(self):
+        listing = "15.4 (15F31d)\n16.4 (16F6)\n26.0 (17A324)\n26.1 (17B55)\n"
+        desired, _ = self._ids(listing, install_beta=False)
+        self.assertEqual(desired, ["26.1", "26.0", "16.4"])
 
     def test_single_stable_release_has_no_previous(self):
         desired, latest = self._ids("16.4 (16F6)\n", install_beta=False)
