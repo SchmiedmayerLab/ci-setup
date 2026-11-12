@@ -46,7 +46,7 @@ For existing installations, the [macOS update runbook](docs/macos-updates.md) co
 ## What gets installed
 
 - **GitHub Actions runner**: latest release, registered to your repo/org, running as a per-user launchd service, kept up to date.
-- **Toolchain** (Homebrew): openjdk (java), firebase-cli, fastlane, node, xcbeautify, git-lfs, aria2, xcodes, jq, python3, swiftlint, periphery — plus xcpretty (Ruby user gem; it has no Homebrew formula).
+- **Toolchain** (Homebrew): openjdk (java), firebase-cli, fastlane, node, xcbeautify, git-lfs, aria2, xcodes, jq, python3, swiftlint, periphery, gmp — plus xcpretty (Ruby user gem; it has no Homebrew formula).
 - **Xcode**: Xcode 26.6 alongside the newest release or Release Candidate in the supplied configuration, plus the newest final release, its previous minor train and the newest release of the previous major version, with all configured platform SDKs, simulator runtimes and (Xcode 26+) the Metal toolchain.
   Newer betas are opt-in.
   See [multiple Xcode versions](docs/xcode-versions.md) for pin-only policies and a separately configured default.
