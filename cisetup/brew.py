@@ -31,6 +31,7 @@ FORMULAE = [
     "fastlane",
     "firebase-cli",
     "git-lfs",
+    "gmp",
     "jq",
     "node",
     "openjdk",
