@@ -45,6 +45,31 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual([r.identifier for r in desired], ['27.2 Release Candidate', '26.6'])
         self.assertEqual(preferred.identifier, '27.2 Release Candidate')
 
+    def test_previous_releases_are_staged_and_resolved_identically_by_guests(self):
+        self.cfg.xcode_track_previous = True
+        self.cfg.xcode_pinned_versions = ['26.6']
+        def catalog(args, **kwargs):
+            if args[0] == 'list':
+                return '26.5 (OLD)\n26.6 (PIN)\n27.0 (PREV)\n' + self.fake_command(args, **kwargs)
+            return self.fake_command(args, **kwargs)
+        self.command.side_effect = catalog
+        archives = xcode_cache.prepare(self.cfg)
+        expected = ['27.2 Release Candidate', '27.1', '27.0', '26.6']
+        self.assertEqual([entry['identifier'] for entry in archives['archives']], expected)
+        downloads = [call for call in self.command.call_args_list if call.args[0][0] == 'download']
+        self.assertEqual(len(downloads), 4)
+
+        staging = self.root / 'Library/Application Support/runner-bootstrap'
+        staging.mkdir(parents=True)
+        connection = MagicMock()
+        xcode_cache.stage(connection, archives, str(staging))
+        (staging / 'xcode-archives.json').write_bytes(connection.upload.call_args.args[0])
+        with patch.object(Path, 'home', return_value=self.root):
+            releases, _ = xcode.host_archives()
+        desired, preferred = xcode.selected_releases(releases, self.cfg)
+        self.assertEqual([r.identifier for r in desired], expected)
+        self.assertEqual(preferred.identifier, '27.2 Release Candidate')
+
     def test_missing_pin_prevents_host_downloads_and_cache_creation(self):
         self.cfg.xcode_pinned_versions = ['26.6']
         with self.assertRaisesRegex(host.HostError, '26.6.*unavailable'):
@@ -61,6 +86,7 @@ class ArchiveTests(unittest.TestCase):
         self.command = patch.object(xcode_cache, 'command', side_effect=self.fake_command).start()
         patch.object(xcode_cache.shutil, 'disk_usage', return_value=MagicMock(free=100 * 1024 ** 3)).start()
         self.cfg = Config(repo_root=self.root)
+        self.cfg.xcode_track_previous = False
 
     def fake_command(self, args, **kwargs):
         if args[0] == 'list':

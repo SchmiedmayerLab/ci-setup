@@ -159,7 +159,8 @@ def parse_installed(text: str) -> list[InstalledXcode]:
 
 def select_desired(
     releases: list[Release], install_beta: bool, *, track_latest: bool = True,
-    pinned_versions: list[str] | None = None, default_version: str = "latest",
+    track_previous: bool = False, pinned_versions: list[str] | None = None,
+    default_version: str = "latest",
 ) -> tuple[list[Release], Release]:
     """Resolve retained releases and default before any install or cleanup."""
     if install_beta and not track_latest:
@@ -183,6 +184,16 @@ def select_desired(
     if track_latest and not eligible:
         raise SetupError("could not parse any Xcode releases or release candidates from `xcodes list`")
     desired = [max(eligible, key=Release.sort_key)] if track_latest else []
+    stables = [r for r in releases if not r.pre]
+    if track_previous and stables:
+        # The newest final release, the newest of its previous minor train and
+        # the newest of any lower major (Apple skipped from Xcode 16 to 26).
+        newest = max(stables, key=Release.sort_key)
+        for pool in ([newest],
+                     [r for r in stables if r.version[:2] != newest.version[:2]],
+                     [r for r in stables if r.version[0] < newest.version[0]]):
+            if pool:
+                desired.append(max(pool, key=Release.sort_key))
     desired += [resolve(identifier, releases) for identifier in pinned_versions or []]
     if install_beta:
         newer_prereleases = [
@@ -206,6 +217,7 @@ def select_desired(
 def selected_releases(releases: list[Release], cfg: Config) -> tuple[list[Release], Release]:
     return select_desired(releases, cfg.xcode_install_beta,
                           track_latest=cfg.xcode_track_latest,
+                          track_previous=cfg.xcode_track_previous,
                           pinned_versions=cfg.xcode_pinned_versions,
                           default_version=cfg.xcode_default_version)
 

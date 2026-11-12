@@ -9,7 +9,8 @@ SPDX-License-Identifier: MIT
 
 Configure which Xcodes maintenance retains independently from the default used by jobs.
 The supplied configuration pins Xcode 26.6 alongside the newest release or Release Candidate and keeps that moving release/RC as the default.
-Older configurations that omit the new keys preserve their previous latest-release/RC behavior, with a newer beta only when explicitly enabled.
+It also retains the newest final release, the newest release of its previous minor train and the newest release of the previous major version.
+Older configurations that omit the new keys track the latest release/RC plus those previous releases, with a newer beta only when explicitly enabled.
 The same policy applies to physical runners and the host-downloaded archives supplied to VM runners.
 
 ## Pin a version alongside the latest
@@ -20,6 +21,7 @@ The supplied policy retains 26.6 while continuing to update the default release/
 [xcode]
 manage = true
 track_latest = true
+track_previous = true
 pinned_versions = ["26.6"]
 default_version = "latest"
 install_beta = false
@@ -38,11 +40,20 @@ Every retained Xcode receives the configured platform SDKs, simulator runtimes, 
 Xcode and runtime versions need not match: Xcode 26.6 supplies 26.5 platform SDKs and uses their compatible runtime families.
 Simulator runtimes are shared machine resources and are not duplicated just because two Xcodes can use them.
 
+## Retain previous releases
+
+`track_previous = true` retains three rolling releases in addition to the tracked release/RC and pins: the newest final release, the newest release of its previous minor train, and the newest release of any lower major version.
+Any lower major counts, so Xcode 16.4 is retained next to 26.x.
+For example, with 27.2 Release Candidate, 27.1, 27.0 and 26.6 in the catalog, the supplied configuration retains all four and keeps 27.2 Release Candidate as the default.
+Right after an x.0 release, the previous minor train and the previous major version are the same release, which is installed once.
+These releases follow the catalog like `track_latest`; pin a version to keep it after it rolls out of this window.
+
 ## Other policies
 
 | Goal | Settings under `[xcode]` |
 | --- | --- |
-| Existing latest-release/RC behavior | `track_latest = true`, `pinned_versions = []`, `default_version = "latest"` |
+| Latest release/RC only | `track_latest = true`, `track_previous = false`, `pinned_versions = []`, `default_version = "latest"` |
+| Latest release/RC plus previous minor and major | `track_latest = true`, `track_previous = true`, `pinned_versions = []`, `default_version = "latest"` |
 | Keep 26.6 plus latest, with latest as default | `track_latest = true`, `pinned_versions = ["26.6"]`, `default_version = "latest"` |
 | Keep 26.6 plus latest, with 26.6 as default | `track_latest = true`, `pinned_versions = ["26.6"]`, `default_version = "26.6"` |
 | Stop tracking and request only explicit versions | `track_latest = false`, `pinned_versions = ["26.6", "27.1"]`, `default_version = "27.1"` |
@@ -58,7 +69,7 @@ An explicitly pinned beta is retained regardless of `install_beta`; a beta-only 
 
 ## Migrating another policy format
 
-The supported keys are `manage`, `track_latest`, `pinned_versions`, `default_version`, `install_beta` and `platforms`.
+The supported keys are `manage`, `track_latest`, `track_previous`, `pinned_versions`, `default_version`, `install_beta` and `platforms`.
 Unknown keys, including `track` and `versions`, fail configuration loading before maintenance rather than silently dropping a pin.
 Translate an existing site policy deliberately and deploy matching source and configuration to host and guests.
 
@@ -76,7 +87,7 @@ Do not mix old and new keys.
 ## Exact version resolution
 
 Pins use exact `xcodes list` identifiers such as `"26.6"`, `"27.2 Release Candidate"` or `"27.3 Beta 2"`.
-Wildcards, version ranges and per-major tracking rules are not implemented.
+Wildcards and version ranges are not implemented; `track_previous` is the only rolling rule besides `track_latest`.
 Equivalent trailing-zero forms such as `26.6` and `26.6.0` resolve to one installation.
 Duplicate pins and a pin that overlaps the tracked latest version also install only once.
 

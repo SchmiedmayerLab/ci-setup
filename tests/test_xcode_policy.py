@@ -44,6 +44,10 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.select(pinned_versions=['26.6', '26.6.0', '26.6']),
                          (['27.2 Release Candidate', '26.6'], '27.2 Release Candidate'))
 
+    def test_previous_releases_overlapping_a_pin_install_once(self):
+        self.assertEqual(self.select(track_previous=True, pinned_versions=['26.6']),
+                         (['27.2 Release Candidate', '27.1', '26.6'], '27.2 Release Candidate'))
+
     def test_requested_missing_ambiguous_or_unretained_versions_fail(self):
         for options in ({'pinned_versions': ['26.7']}, {'default_version': '26.6'},
                         {'track_latest': False}, {'pinned_versions': ['26.*']}):
@@ -89,6 +93,7 @@ class PolicyConfigTests(unittest.TestCase):
     def test_defaults_preserve_existing_policy(self):
         cfg = self.load('')
         self.assertTrue(cfg.xcode_track_latest)
+        self.assertTrue(cfg.xcode_track_previous)
         self.assertEqual(cfg.xcode_pinned_versions, [])
         self.assertEqual(cfg.xcode_default_version, 'latest')
 
@@ -97,7 +102,8 @@ class PolicyConfigTests(unittest.TestCase):
         self.assertEqual(xcode.selected_releases(xcode.parse_list(CATALOG), cfg)[1].identifier, '26.6')
 
     def test_malformed_configuration_is_rejected(self):
-        for policy in ('track_latest="false"', 'manage="false"', 'install_beta="false"',
+        for policy in ('track_latest="false"', 'track_previous="true"', 'manage="false"',
+                       'install_beta="false"',
                        'pinned_versions="26.6"', 'pinned_versions=[26.6]',
                        'pinned_versions=[""]', 'pinned_versions=["26.*"]', 'pinned_versions=[" 26.6"]',
                        'default_version=""', 'default_version="26.*"', 'default_version=26.6',

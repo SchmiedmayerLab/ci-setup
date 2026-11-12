@@ -85,6 +85,7 @@ class Config:
     xcode_manage: bool = True
     xcode_install_beta: bool = False
     xcode_track_latest: bool = True
+    xcode_track_previous: bool = True
     xcode_pinned_versions: list[str] = field(default_factory=list)
     xcode_default_version: str = "latest"
     xcode_platforms: list[str] = field(default_factory=lambda: ["all"])
@@ -219,20 +220,22 @@ def load(repo_root: Path) -> Config:
     cfg.cleanup_hooks = bool(runner.get("cleanup_hooks", True))
 
     unknown_xcode = set(xcode) - {
-        "manage", "install_beta", "track_latest", "pinned_versions", "default_version", "platforms",
+        "manage", "install_beta", "track_latest", "track_previous", "pinned_versions",
+        "default_version", "platforms",
     }
     if unknown_xcode:
         raise SetupError(
             "config.toml: unsupported xcode keys: " + ", ".join(sorted(unknown_xcode))
-            + "; use track_latest, pinned_versions and default_version; "
+            + "; use track_latest, track_previous, pinned_versions and default_version; "
             "migrate track/versions policies explicitly before maintenance"
         )
-    for key in ("manage", "install_beta", "track_latest"):
+    for key in ("manage", "install_beta", "track_latest", "track_previous"):
         if key in xcode and type(xcode[key]) is not bool:
             raise SetupError(f"config.toml: xcode.{key} must be a boolean")
     cfg.xcode_manage = xcode.get("manage", True)
     cfg.xcode_install_beta = xcode.get("install_beta", False)
     cfg.xcode_track_latest = xcode.get("track_latest", True)
+    cfg.xcode_track_previous = xcode.get("track_previous", True)
     cfg.xcode_pinned_versions = _str_list(xcode.get("pinned_versions", []), "xcode.pinned_versions")
     cfg.xcode_default_version = _str(xcode, "default_version", "xcode.default_version", "latest")
     version_pattern = r"\d+(?:\.\d+){0,2}(?: Beta(?: \d+)?| Release Candidate(?: \d+)?)?"
