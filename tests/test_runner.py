@@ -1,3 +1,5 @@
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
+#
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 # SPDX-License-Identifier: MIT
 
@@ -6,6 +8,7 @@
 import json
 import subprocess
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -75,6 +78,29 @@ class RunnerTests(unittest.TestCase):
                 runner.ensure_service(self.cfg)
         self.assertTrue((self.cfg.runner_dir / runner._RESTART_MARKER).exists())
 
+    def test_cleanup_environment_is_installed_and_removed_as_one_policy(self):
+        env = BrewEnv('/fake/brew', '/fake/java', None)
+        runner.ensure_job_env(self.cfg, env, None)
+        contents = (self.cfg.runner_dir / '.env').read_text()
+        self.assertIn('CI_SETUP_PYTHON=' + sys.executable, contents)
+        self.assertIn('CI_SETUP_WORK_DIR=' + str((self.cfg.runner_dir / self.cfg.work_dir).resolve()), contents)
+        self.cfg.cleanup_hooks = False
+        runner.ensure_job_env(self.cfg, env, None)
+        contents = (self.cfg.runner_dir / '.env').read_text()
+        for key in ('CI_SETUP_PYTHON', 'CI_SETUP_WORK_DIR', 'ACTIONS_RUNNER_HOOK_JOB_STARTED',
+                    'ACTIONS_RUNNER_HOOK_JOB_COMPLETED'):
+            self.assertNotIn(key, contents)
+
+    def test_former_workspace_is_retained_even_if_saved_state_is_unsafe(self):
+        old = self.root / 'old-work'
+        old.mkdir()
+        sentinel = old / 'keep'
+        sentinel.write_text('preserve')
+        with patch.object(runner, 'warn') as warning:
+            runner._cleanup_old_work_dir(self.cfg, {'work_dir': str(old)})
+        warning.assert_called_once()
+        self.assertEqual(sentinel.read_text(), 'preserve')
+
     def test_drift_without_pat_is_incomplete_and_preserves_registration(self):
         self.touch(".runner", "registration")
         self.touch(runner._STATE_FILE, json.dumps({"name": "old"}))
@@ -104,6 +130,13 @@ class RunnerTests(unittest.TestCase):
                 runner.deregister(self.cfg)
         for name in (".runner", ".credentials", ".credentials_rsaparams", runner._STATE_FILE):
             self.assertEqual((self.cfg.runner_dir / name).read_text(), "preserve me")
+
+    def test_registration_never_replaces_a_runner_with_the_same_name(self):
+        self.run.side_effect = None
+        runner._register(self.cfg, token="short-lived-test-token")
+        args = self.run.call_args.args[0]
+        self.assertNotIn("--replace", args)
+        self.assertEqual(args[args.index("--token") + 1], "short-lived-test-token")
 
     def test_uninstall_already_stopped_service_removes_only_its_plist(self):
         agents = self.root / "Library/LaunchAgents"

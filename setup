@@ -1,6 +1,6 @@
 #!/bin/zsh
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -11,25 +11,29 @@
 #
 # This script only guarantees the minimal foundation (Xcode Command Line
 # Tools, Homebrew, a modern python3) and then hands off to the Python
-# implementation in cisetup/. Everything is safe to re-run; re-runs only
-# change what needs changing.
+# implementation in cisetup/. Reruns check existing state and stop when
+# automatic recovery would be unsafe.
 #
 # Usage:
+#   ./setup prepare host           prepare interactively, then provision in background
+#   ./setup install runner         guided setup of a dedicated physical runner
+#   ./setup install host           guided setup of a host and runner VMs
 #   ./setup                        converge the machine (default)
 #   ./setup status                 show current state
 #   ./setup info                   summarize setup, services and tool versions
 #   ./setup update                 fast-forward this checkout, then converge
 #   ./setup adopt ~/runner         maintain an existing runner without re-registering
+#   ./setup register --runner-name NAME --registration-token-stdin
+#                                  register a guest using a token piped by its host
 #   ./setup logs                   show recent maintenance output
 #   ./setup status --json          export a comparable runner inventory
 #   ./setup compare snapshot.json  compare with another runner's inventory
-#   ./setup store-pat [token]      save a GitHub PAT to the Keychain
-#                                      (without a token: prints the PAT
-#                                      requirements and prompts, input hidden)
+#   ./setup store-pat              show PAT requirements, prompt with hidden input,
+#                                      and save it in the login Keychain
 #   ./setup uninstall              deregister the runner from GitHub
 #   ./setup converge --non-interactive
 #                                      what the boot LaunchAgent runs: never
-#                                      prompts, never uses sudo
+#                                      prompts; privileged steps need existing authorization
 
 set -e
 set -u
@@ -57,6 +61,11 @@ fi
 if (( EUID == 0 )); then
   fail "do not run as root — the runner and its services are per-user"
 fi
+if [[ ( ${1:-} == install || ${1:-} == prepare ) && ${2:-} == host ]] && (( ! SHOW_HELP )); then
+  [[ $(uname -m) == arm64 ]] || fail "macOS runner VMs require an Apple silicon host"
+  RUNNER_HOST_VERSION=$(/usr/bin/sw_vers -productVersion)
+  (( ${RUNNER_HOST_VERSION%%.*} >= 27 )) || fail "automatic guest setup requires macOS 27+ on the host; update macOS before installing prerequisites"
+fi
 
 # --- store-pat (no bootstrap needed) -----------------------------------------
 # Storing the PAT only needs macOS's own `security`, so handle it before any
@@ -65,31 +74,32 @@ fi
 
 if [[ ${1:-} == store-pat ]] && (( ! SHOW_HELP )); then
   readonly KEYCHAIN_SERVICE="github-runner-pat"
+  readonly LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
   TOKEN="${2:-}"
-  if [[ -n $TOKEN ]]; then
-    if [[ ! $TOKEN =~ '^[A-Za-z0-9_.=+/~-]+$' ]]; then
-      fail "that does not look like a GitHub PAT"
-    fi
-    # `security -i` reads the command from stdin, keeping the token off
-    # security's argv (it was on setup's argv already — the caller's
-    # choice — but it must not leak any further). The charset check above
-    # guarantees the quoting below cannot be escaped.
-    print -r -- "add-generic-password -U -a \"$USER\" -s \"$KEYCHAIN_SERVICE\" -w \"$TOKEN\"" \
-      | /usr/bin/security -i || fail "could not store the PAT in the Keychain"
-  else
+  if [[ -z $TOKEN ]]; then
     cat <<'EOF'
-A GitHub personal access token (PAT) lets the setup register, re-register,
-and deregister the runner via the GitHub API. Required rights:
+A GitHub personal access token (PAT) lets the setup discover names, register,
+re-register, and deregister runners. Prefer a fine-grained token:
 
   repository runner (github.scope = "repo"):
-    classic PAT:       `repo` scope
-    fine-grained PAT:  repository permission "Administration: write"
+    Resource owner: the repository owner; select only the target repository.
+    Repository permission: "Administration: Read and write"
 
   organization runner (github.scope = "org"):
-    classic PAT:       `admin:org` scope
-    fine-grained PAT:  organization permission "Self-hosted runners: write"
+    Resource owner: the destination organization.
+    Organization permission: "Self-hosted runners: Read and write"
+    No repository permissions are needed for organization runner management.
 
-Prefer a fine-grained PAT limited to exactly the target repo/org.
+Your account needs administrative access to the destination. If the organization
+requires token approval, wait for approval before continuing. Set an expiration
+date and renew the stored token before it expires.
+
+Optional: dispatching an existing validation workflow requires repository
+"Actions: Read and write", limited to its repository. This is not required
+to install or operate runners. Jobs use their own workflow credentials.
+
+Classic tokens are also supported: `repo` for repository runners, `admin:org`
+for organization runners (GitHub may also require `repo` for private resources).
 Create one at:
   https://github.com/settings/personal-access-tokens/new   (fine-grained)
   https://github.com/settings/tokens/new                   (classic)
@@ -99,16 +109,29 @@ The token is stored only in this machine's login Keychain (service
 
 Usage:
   ./setup store-pat            prompt for the token (input hidden)
-  ./setup store-pat <token>    store the given token
 
 EOF
     if [[ ! -t 0 ]]; then
       fail "no token given and no terminal to prompt on"
     fi
-    # `-w` without a value: security itself prompts (hidden, with confirmation).
-    /usr/bin/security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w \
-      || fail "could not store the PAT in the Keychain"
+    read -rs 'TOKEN?GitHub token (hidden): ' || fail "token entry cancelled"
+    print
   fi
+  if [[ ! $TOKEN =~ '^[A-Za-z0-9_.=+/~-]+$' ]]; then
+    fail "that does not look like a GitHub PAT"
+  fi
+  # Keep the secret off security's argv. Escape its interactive command syntax.
+  KEYCHAIN_INPUT="${LOGIN_KEYCHAIN//\\/\\\\}"
+  KEYCHAIN_INPUT="${KEYCHAIN_INPUT//\"/\\\"}"
+  KEYCHAIN_ACCOUNT="$(/usr/bin/id -un)"
+  print -r -- "add-generic-password -U -a \"$KEYCHAIN_ACCOUNT\" -s \"$KEYCHAIN_SERVICE\" -w \"$TOKEN\" \"$KEYCHAIN_INPUT\"" \
+    | /usr/bin/security -i || fail "could not store the PAT in the Keychain"
+  # Interactive security may exit zero after a failed subcommand. Verify without
+  # printing the token or passing it to another process as an argument.
+  STORED_TOKEN="$(/usr/bin/security find-generic-password -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w "$LOGIN_KEYCHAIN")" \
+    || fail "could not verify the PAT in the login Keychain"
+  [[ $STORED_TOKEN == $TOKEN ]] || fail "the stored PAT did not match"
+  unset TOKEN STORED_TOKEN
   log "PAT stored in the login Keychain (service: $KEYCHAIN_SERVICE)"
   exit 0
 fi
@@ -119,17 +142,36 @@ fi
 READ_ONLY=0
 for arg in "$@"; do
   case "$arg" in
-    status|info|logs|compare|adopt|--help|-h) READ_ONLY=1 ;;
+    host|status|info|logs|compare|adopt|register|--check|--help|-h) READ_ONLY=1 ;;
   esac
 done
+if [[ ${1:-} == install || ${1:-} == prepare ]] && (( ! SHOW_HELP )); then
+  if [[ ${1:-} == prepare ]]; then
+    [[ ${2:-} == host ]] || fail "usage: ./setup prepare host [options]"
+  fi
+  [[ ${2:-} == runner || ${2:-} == host ]] || fail "usage: ./setup install {runner|host} [options]"
+  export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+  # 'host' is otherwise an inspection command; guided installation needs the
+  # shared foundation. A readiness check must never install prerequisites.
+  READ_ONLY=0
+  for arg in "$@"; do
+    [[ $arg != --check && $arg != --prepared ]] || READ_ONLY=1
+  done
+fi
+# Host bootstrap shares only the prerequisite installation below.
+if [[ ${1:-} == host && ${2:-} == bootstrap ]] && (( ! SHOW_HELP )); then
+  (( $# == 2 )) || fail "usage: ./setup host bootstrap"
+  READ_ONLY=0
+  export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+fi
 if (( READ_ONLY )); then
   export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
-  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 "${commands[python3]:-}"; do
     if [[ -x $candidate ]] && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
       exec "$candidate" "$SCRIPT_DIR/bin/ci-setup" "$@"
     fi
   done
-  fail "Python 3.11+ is needed for inspection/adoption; no changes were made"
+  fail "Python 3.11+ is needed for this command; no changes were made"
 fi
 
 # launchd's fallback only covers the latest bootstrap attempt. Python captures
@@ -147,7 +189,7 @@ if ! /usr/bin/xcode-select -p &>/dev/null; then
   fi
   log "Xcode Command Line Tools are missing — requesting installation (GUI dialog)."
   /usr/bin/xcode-select --install || true
-  fail "re-run ./setup once the Command Line Tools installation has finished"
+  fail "finish Command Line Tools in Apple’s installer or System Settings > General > Software Update, verify xcode-select -p, then rerun this same command"
 fi
 
 # --- Homebrew ----------------------------------------------------------------

@@ -1,5 +1,5 @@
 #
-# This source file is part of the SchmiedmayerLab ci-setup open-source project
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
 #
 # SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
 #
@@ -19,6 +19,12 @@ from .config import Config
 from .util import SetupError
 
 API_ROOT = "https://api.github.com"
+
+
+class GitHubAPIError(SetupError):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
 
 
 def _request(method: str, path: str, pat: str | None):
@@ -56,7 +62,7 @@ def _request(method: str, path: str, pat: str | None):
                 hint = " (is the PAT valid and does it have admin rights on the runner scope?)"
             if e.code == 404:
                 hint = " (does the owner/repo exist and can the PAT see it?)"
-            raise SetupError(f"GitHub API {method} {path}: HTTP {e.code}{hint} {body}") from e
+            raise GitHubAPIError(f"GitHub API {method} {path}: HTTP {e.code}{hint} {body}", e.code) from e
         except urllib.error.URLError as e:
             last_error = e
             time.sleep(2**attempt)

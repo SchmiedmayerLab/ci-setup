@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+# This source file is part of the macOS Self-Hosted GitHub Actions Runner open-source project
+#
+# SPDX-FileCopyrightText: 2026 Stanford University and the project authors (see CONTRIBUTORS.md)
+# SPDX-License-Identifier: MIT
+
+"""Check local documentation links and section anchors without network access."""
+
+from pathlib import Path
+import re
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def prose(path):
+    return re.sub(r'```.*?```', '', path.read_text(), flags=re.S)
+
+
+def anchors(path):
+    result, counts = set(), {}
+    for heading in re.findall(r'^#{1,6}\s+(.+)$', prose(path), flags=re.M):
+        slug = re.sub(r'[^\w\- ]', '', heading.lower()).replace(' ', '-')
+        count = counts.get(slug, 0)
+        counts[slug] = count + 1
+        result.add(slug if not count else f'{slug}-{count}')
+    return result
+
+
+def main():
+    errors, checked = [], 0
+    for path in [*ROOT.glob('*.md'), *ROOT.joinpath('docs').rglob('*.md')]:
+        for link in re.findall(r'\[[^\]]*\]\(([^)]+)\)', prose(path)):
+            if re.match(r'\w+://|mailto:', link):
+                continue
+            target, _, fragment = link.partition('#')
+            resolved = path.parent / target if target else path
+            checked += 1
+            if not resolved.is_file():
+                errors.append(f'{path.relative_to(ROOT)}: missing {link}')
+            elif fragment and resolved.suffix == '.md' and fragment not in anchors(resolved):
+                errors.append(f'{path.relative_to(ROOT)}: missing section {link}')
+    for error in errors:
+        print(error)
+    print(f'Checked {checked} local documentation links; {len(errors)} errors.')
+    return bool(errors)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
